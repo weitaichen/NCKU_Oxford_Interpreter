@@ -203,6 +203,7 @@ const state = {
   viewers: new Set(),   // 目前的 SSE 連線
   live: false,          // 操作員是否正在收音
   glossary: [],
+  keyterms: [],         // 只有標了 kt 的罕見專有名詞才送給 Deepgram
   recent: [],           // 給翻譯當上下文的最近幾句英文
   startedAt: new Date().toISOString(),
 };
@@ -330,10 +331,13 @@ async function main() {
   // 詞彙表：讓 7 天下來同一個專有名詞都翻得一致
   try {
     const raw = JSON.parse(await readFile(join(ROOT, 'glossary.json'), 'utf8'));
-    state.glossary = Array.isArray(raw.terms) ? raw.terms : [];
+    state.glossary = (Array.isArray(raw.terms) ? raw.terms : []).filter((t) => t.en);
   } catch {
     state.glossary = [];
   }
+  // Deepgram 官方建議「專注在最重要的 20-50 個」，且明確不要送常見字。
+  // 送太多會讓模型過度擬合、強行湊出音訊裡沒說過的詞。
+  state.keyterms = state.glossary.filter((t) => t.kt).map((t) => t.en).slice(0, 40);
 
   const glossaryBlock = state.glossary.length
     ? '\n\n會議詞彙表（出現時必須照此處理）：\n' +
@@ -418,7 +422,10 @@ async function main() {
       const common = {
         language: sttLanguage,
         model: sttModel,
-        keyterms: state.glossary.map((t) => t.en).filter(Boolean).slice(0, 100),
+        // 只送標了 kt 的罕見專有名詞。Deepgram 官方已知的失效模式：
+        // keyterm 一多，模型會 force-fitting，把音訊裡沒說的詞硬湊出來。
+        // 常見字（coach、framework、canvas…）絕對不能放進來。
+        keyterms: state.keyterms,
       };
 
       try {
@@ -685,7 +692,7 @@ async function main() {
     console.log(`  STT      ${deepgramKey ? `Deepgram ${sttModel} / ${sttLanguage}` : '未設定 -> 操作頁會退回 Web Speech 備援'}`);
     console.log(`  翻譯     ${translateKey ? `${providerName} / ${translateModel}` : '未設定 -> 字幕只會有英文'}`);
     console.log(`  整理筆記 ${summaryKey ? `${summaryProviderName} / ${summaryModel}` : '未設定'}`);
-    console.log(`  詞彙表   ${state.glossary.length} 個詞\n`);
+    console.log(`  詞彙表   ${state.glossary.length} 個詞（其中 ${state.keyterms.length} 個送 Deepgram keyterm）\n`);
 
     if (externalUrl) {
       console.log(`  操作員   ${externalUrl}/captioner`);
