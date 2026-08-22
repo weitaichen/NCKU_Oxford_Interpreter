@@ -1,10 +1,23 @@
 {
-  "_說明": "會議詞彙表。en 是講者會說的英文，zh 留空代表字幕直接保留英文原文。這裡的 en 也會當作 Deepgram keyterm 送出去，提升專有名詞辨識率。",
+  "_說明": "會議詞彙表。en 是講者會說的英文；zh 留空代表字幕保留英文原文。這份表會同時（一）注入翻譯提示詞讓譯法一致，（二）當作 Deepgram 的 keyterm 提升專有名詞辨識率。活動前把講者姓名、職稱、機構、主題專有名詞都補進來，這是投報率最高的準備工作。",
+
   "terms": [
-    { "en": "Anthropic", "zh": "" },
-    { "en": "Claude", "zh": "" },
-    { "en": "machine learning", "zh": "機器學習" },
-    { "en": "large language model", "zh": "大型語言模型" },
-    { "en": "throughput", "zh": "吞吐量" }
+    { "en": "National Cheng Kung University", "zh": "國立成功大學" },
+    { "en": "NCKU", "zh": "成大" },
+    { "en": "University of Oxford", "zh": "牛津大學" },
+    { "en": "Oxford", "zh": "牛津" },
+    { "en": "Tainan", "zh": "台南" },
+    { "en": "symposium", "zh": "研討會" },
+    { "en": "keynote", "zh": "主題演講" },
+    { "en": "faculty", "zh": "教職員" },
+    { "en": "postgraduate", "zh": "研究生" },
+    { "en": "supervisor", "zh": "指導教授" },
+    { "en": "peer review", "zh": "同儕審查" },
+    { "en": "methodology", "zh": "研究方法" },
+    { "en": "preliminary results", "zh": "初步結果" },
+
+    { "_註": "↓ 以下請依實際議程替換／增補 ↓" },
+    { "en": "Professor ______", "zh": "" },
+    { "en": "Dr. ______", "zh": "" }
   ]
 }
