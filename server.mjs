@@ -77,10 +77,10 @@ const TAIWAN_SYSTEM_PROMPT = `你是會議即時字幕的英譯中翻譯器。�
 // 不要讓一個選用參數把整場字幕搞掛。
 let geminiThinking = { thinkingLevel: 'minimal' };
 
-async function callGemini({ apiKey, model, system, user, signal }) {
+async function callGemini({ apiKey, model, system, user, signal, maxTokens = 1024, thinking = geminiThinking }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
-  const send = (thinking) =>
+  const send = (thinkingCfg) =>
     fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
@@ -89,8 +89,8 @@ async function callGemini({ apiKey, model, system, user, signal }) {
         contents: [{ role: 'user', parts: [{ text: user }] }],
         generationConfig: {
           temperature: 0.3,
-          maxOutputTokens: 1024,
-          ...(thinking ? { thinkingConfig: thinking } : {}),
+          maxOutputTokens: maxTokens,
+          ...(thinkingCfg ? { thinkingConfig: thinkingCfg } : {}),
         },
       }),
       signal,
@@ -117,7 +117,7 @@ async function callGemini({ apiKey, model, system, user, signal }) {
   return (data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
 }
 
-async function callClaude({ apiKey, model, system, user, signal }) {
+async function callClaude({ apiKey, model, system, user, signal, maxTokens = 1024 }) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -127,9 +127,10 @@ async function callClaude({ apiKey, model, system, user, signal }) {
     },
     body: JSON.stringify({
       model,
-      max_tokens: 1024,
+      max_tokens: maxTokens,
       temperature: 0.3,
-      system,
+      // 系統提示詞每句都重送，快取起來可省下約 9 成的輸入成本
+      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: user }],
     }),
     signal,
@@ -143,9 +144,46 @@ async function callClaude({ apiKey, model, system, user, signal }) {
 }
 
 const PROVIDERS = {
-  gemini: { keyEnv: 'GEMINI_API_KEY', defaultModel: 'gemini-3.7-flash', call: callGemini },
-  claude: { keyEnv: 'ANTHROPIC_API_KEY', defaultModel: 'claude-haiku-4-5-20251001', call: callClaude },
+  gemini: {
+    keyEnv: 'GEMINI_API_KEY',
+    defaultModel: 'gemini-3.7-flash',
+    defaultSummaryModel: 'gemini-3.7-flash',
+    call: callGemini,
+  },
+  claude: {
+    keyEnv: 'ANTHROPIC_API_KEY',
+    defaultModel: 'claude-haiku-4-5-20251001',
+    defaultSummaryModel: 'claude-sonnet-5',
+    call: callClaude,
+  },
 };
+
+// 整理筆記跟即時翻譯是完全不同的工作：一次呼叫、不趕時間、要的是理解與結構。
+// 所以用比較強的模型，成本一次約 US$0.02，可以忽略。
+const NOTES_SYSTEM_PROMPT = `你是專業的學術會議記錄整理者。使用者會給你一場演講／會議的「中英對照逐字稿」，請整理成一份結構清晰、可直接拿來複習的台灣繁體中文筆記。
+
+用 Markdown 輸出，依序包含這些段落：
+
+## 一句話總結
+整場的核心主張，兩三句話講完。
+
+## 重點大綱
+分層條列，涵蓋主要論點與推進脈絡。每個重點下面可以帶一兩句支撐說明。
+
+## 關鍵術語
+表格三欄：英文原文 ｜ 中文 ｜ 一句話解釋。只收錄真正重要的，不要湊數。
+
+## 值得追問的問題
+三到五個聽完後值得深入或查證的問題。
+
+## 需要回頭確認的段落
+逐字稿來自即時語音辨識，難免有錯。把你判斷可能辨識錯誤、或語意明顯不通的地方標出來，附上原文位置，讓人回頭聽錄音確認。沒有的話就寫「無」。
+
+規則：
+- 一律使用台灣繁體中文與台灣慣用詞彙，標點全形。
+- 人名、機構名、產品名、專有名詞保留英文原文，必要時在後面補中文。
+- **忠實於逐字稿**，不要補充原文沒有講到的內容。你不確定的地方寧可放進「需要回頭確認」，也不要自己編。
+- 逐字稿可能有斷句錯誤或錯字，請依上下文合理推斷語意，不要照抄明顯的辨識錯誤。`;
 
 // ------------------------------------------------------------------ 狀態
 
@@ -265,6 +303,16 @@ async function main() {
   const provider = PROVIDERS[providerName];
   const translateKey = (process.env[provider.keyEnv] || '').trim();
   const translateModel = (process.env.TRANSLATE_MODEL || '').trim() || provider.defaultModel;
+
+  // 整理筆記可以用跟即時翻譯不同的供應商 —— 一天只呼叫一次，值得用好一點的模型。
+  // 沒指定的話優先挑 Claude（筆記品質較好），否則沿用翻譯那家。
+  let summaryProviderName = (process.env.SUMMARY_PROVIDER || '').trim().toLowerCase();
+  if (!PROVIDERS[summaryProviderName]) {
+    summaryProviderName = (process.env.ANTHROPIC_API_KEY || '').trim() ? 'claude' : providerName;
+  }
+  const summaryProvider = PROVIDERS[summaryProviderName];
+  const summaryKey = (process.env[summaryProvider.keyEnv] || '').trim();
+  const summaryModel = (process.env.SUMMARY_MODEL || '').trim() || summaryProvider.defaultSummaryModel;
 
   const roomCode = (process.env.ROOM_CODE || '').trim() || makeCode(4);
   const operatorKey = (process.env.OPERATOR_KEY || '').trim() || makeCode(8);
@@ -520,6 +568,63 @@ async function main() {
       return sendJson(res, 200, { day, count: rows.length, rows });
     }
 
+    // ---- 一鍵整理上課筆記 ----
+    if (req.method === 'POST' && path === '/api/summarize') {
+      let body;
+      try {
+        body = JSON.parse(await readBody(req, 8 * 1024 * 1024));
+      } catch {
+        return sendJson(res, 400, { error: '無法解析請求內容（逐字稿可能過大）' });
+      }
+      if (body.operatorKey !== operatorKey) return sendJson(res, 403, { error: '操作員金鑰錯誤' });
+      if (!summaryKey) {
+        return sendJson(res, 503, {
+          error: `尚未設定 ${summaryProvider.keyEnv}，無法整理筆記`,
+        });
+      }
+
+      const rows = Array.isArray(body.rows) ? body.rows : state.transcript;
+      if (!rows.length) return sendJson(res, 400, { error: '沒有逐字稿可以整理' });
+
+      let text = rows.map((r) => `${r.en}\n${r.zh || ''}`).join('\n\n');
+      let truncated = false;
+      const LIMIT = 400_000;   // 約 13 萬 token，留足空間給輸出
+      if (text.length > LIMIT) {
+        text = text.slice(0, LIMIT);
+        truncated = true;
+      }
+
+      const title = String(body.title || '').trim();
+      const userMessage =
+        (title ? `場次：${title}\n\n` : '') +
+        `以下是中英對照逐字稿，每組兩行（第一行英文原文、第二行中文翻譯）：\n\n${text}` +
+        (truncated ? '\n\n（註：逐字稿過長已截斷，以上為前半部分）' : '');
+
+      try {
+        const notes = await summaryProvider.call({
+          apiKey: summaryKey,
+          model: summaryModel,
+          system: NOTES_SYSTEM_PROMPT,
+          user: userMessage,
+          maxTokens: 8192,
+          thinking: null,        // 整理筆記讓模型好好想，不要壓思考
+          signal: AbortSignal.timeout(300_000),
+        });
+        return sendJson(res, 200, {
+          notes,
+          sentences: rows.length,
+          truncated,
+          model: summaryModel,
+          provider: summaryProviderName,
+        });
+      } catch (err) {
+        console.error('[summarize]', err.message);
+        return sendJson(res, err.status || 502, {
+          error: err.status === 401 ? `${summaryProvider.keyEnv} 無效` : `整理失敗：${err.message.slice(0, 300)}`,
+        });
+      }
+    }
+
     if (req.method === 'GET' && path === '/api/transcript/days') {
       if (url.searchParams.get('key') !== operatorKey) return sendJson(res, 403, { error: '操作員金鑰錯誤' });
       try {
@@ -550,6 +655,7 @@ async function main() {
     console.log('\n  === 會議即時英譯中字幕系統 ===\n');
     console.log(`  STT      ${deepgramKey ? `Deepgram ${sttModel} / ${sttLanguage}` : '未設定 -> 操作頁會退回 Web Speech 備援'}`);
     console.log(`  翻譯     ${translateKey ? `${providerName} / ${translateModel}` : '未設定 -> 字幕只會有英文'}`);
+    console.log(`  整理筆記 ${summaryKey ? `${summaryProviderName} / ${summaryModel}` : '未設定'}`);
     console.log(`  詞彙表   ${state.glossary.length} 個詞\n`);
 
     if (externalUrl) {

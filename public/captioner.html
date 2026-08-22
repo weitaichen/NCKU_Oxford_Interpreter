@@ -72,6 +72,23 @@
   body:not(.running) #interim:empty::before { content: ""; }
   #meter { flex: none; width: 60px; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; }
   #meterFill { height: 100%; width: 0%; background: var(--ok); transition: width .08s linear; }
+
+  /* ---- 筆記視窗 ---- */
+  #notesModal { position: fixed; inset: 0; z-index: 30; display: none;
+    background: #000a; padding: 4vh 4vw; }
+  #notesModal.show { display: flex; }
+  #notesBox { margin: auto; width: 100%; max-width: 860px; height: 100%;
+    display: flex; flex-direction: column; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  #notesHead { flex: none; display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  #notesHead h2 { font-size: 15px; margin: 0; font-weight: 600; }
+  #notesMeta { font-size: 12px; color: var(--dim); }
+  #notesBody { flex: 1 1 auto; overflow-y: auto; padding: 20px 22px; margin: 0;
+    font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", ui-monospace, monospace;
+    font-size: 14px; line-height: 1.75; white-space: pre-wrap; word-break: break-word;
+    color: var(--fg); }
+  #notesBody.working { color: var(--dim); font-style: italic; }
 </style>
 </head>
 <body>
@@ -85,6 +102,7 @@
   <div class="spacer"></div>
   <button id="copyLink">複製觀眾網址</button>
   <button id="download">下載逐字稿</button>
+  <button id="notes">整理筆記</button>
   <button id="toggle">開始收音</button>
 </header>
 
@@ -114,6 +132,20 @@
   <div id="meter"><div id="meterFill"></div></div>
   <div id="interim"></div>
 </footer>
+
+<div id="notesModal">
+  <div id="notesBox">
+    <div id="notesHead">
+      <h2>課程筆記</h2>
+      <span id="notesMeta"></span>
+      <div class="spacer"></div>
+      <button id="notesCopy">複製</button>
+      <button id="notesSave">下載 .md</button>
+      <button id="notesClose">關閉</button>
+    </div>
+    <pre id="notesBody"></pre>
+  </div>
+</div>
 
 <script>
 (() => {
@@ -572,6 +604,82 @@
     } else {
       downloadDay(pick.trim());
     }
+  };
+
+  // ---------- 一鍵整理筆記 ----------
+  // 送出去的是本機那份逐字稿，所以伺服器重啟過也照樣能整理。
+
+  const notesModal = $('notesModal');
+  const notesBody = $('notesBody');
+  let notesText = '';
+  let notesDay = '';
+
+  $('notes').onclick = async () => {
+    if (!opKey()) { showBanner('請先填入操作金鑰。'); opKeyInput.focus(); return; }
+
+    const days = savedDays();
+    if (!days.length) { showBanner('目前還沒有任何逐字稿可以整理。'); return; }
+    notesDay = days.length === 1 ? days[0] : (prompt(`要整理哪一天？\n已保存：${days.join('、')}`, today()) || '').trim();
+    if (!notesDay) return;
+
+    let rows = [];
+    try { rows = JSON.parse(localStorage.getItem(storeKey(notesDay)) || '[]'); } catch {}
+    if (!rows.length) { showBanner(`${notesDay} 沒有已保存的逐字稿。`); return; }
+
+    notesText = '';
+    notesModal.classList.add('show');
+    notesBody.className = 'working';
+    notesBody.textContent = `正在整理 ${notesDay} 的 ${rows.length} 句逐字稿…\n\n內容較長時可能需要一兩分鐘，請不要關閉這個視窗。`;
+    $('notesMeta').textContent = '';
+
+    try {
+      const res = await fetch('/api/summarize', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operatorKey: opKey(), rows, title: notesDay }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        notesBody.className = '';
+        notesBody.textContent = '整理失敗：' + (data.error || `HTTP ${res.status}`);
+        return;
+      }
+      notesText = data.notes || '';
+      notesBody.className = '';
+      notesBody.textContent = notesText || '（模型沒有回傳內容）';
+      $('notesMeta').textContent =
+        `${data.sentences} 句 · ${data.provider}/${data.model}` + (data.truncated ? ' · 逐字稿過長已截斷' : '');
+    } catch (err) {
+      notesBody.className = '';
+      notesBody.textContent = '整理失敗：' + err.message;
+    }
+  };
+
+  $('notesClose').onclick = () => notesModal.classList.remove('show');
+  notesModal.onclick = (e) => { if (e.target === notesModal) notesModal.classList.remove('show'); };
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') notesModal.classList.remove('show');
+  });
+
+  $('notesCopy').onclick = async () => {
+    if (!notesText) return;
+    try {
+      await navigator.clipboard.writeText(notesText);
+      $('notesCopy').textContent = '已複製 ✓';
+    } catch {
+      $('notesCopy').textContent = '複製失敗';
+    }
+    setTimeout(() => ($('notesCopy').textContent = '複製'), 1600);
+  };
+
+  $('notesSave').onclick = () => {
+    if (!notesText) return;
+    const url = URL.createObjectURL(new Blob([notesText], { type: 'text/markdown;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `notes-${notesDay}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   window.addEventListener('beforeunload', (e) => {
