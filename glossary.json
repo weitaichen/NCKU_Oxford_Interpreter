@@ -1,0 +1,10 @@
+{
+  "_說明": "會議詞彙表。en 是講者會說的英文，zh 留空代表字幕直接保留英文原文。這裡的 en 也會當作 Deepgram keyterm 送出去，提升專有名詞辨識率。",
+  "terms": [
+    { "en": "Anthropic", "zh": "" },
+    { "en": "Claude", "zh": "" },
+    { "en": "machine learning", "zh": "機器學習" },
+    { "en": "large language model", "zh": "大型語言模型" },
+    { "en": "throughput", "zh": "吞吐量" }
+  ]
+}

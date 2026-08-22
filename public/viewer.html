@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="即時字幕">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/icon.svg">
+<title>會議即時字幕</title>
+<style>
+  :root {
+    --fs: 26px;
+    --bg: #0d1117; --panel: #161b22; --line: #262d36;
+    --dim: #7d8b99; --fg: #f0f4f8; --accent: #58a6ff;
+    --ok: #3fb950; --warn: #f0b429; --err: #f4776b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+    overscroll-behavior: none; }
+  body { display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+
+  header { flex: none; display: flex; align-items: center; gap: 12px;
+    padding: 9px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .pill { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4a5561; flex: none; }
+  .dot.live { background: var(--err); animation: pulse 1.4s ease-in-out infinite; }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+  .spacer { flex: 1 1 auto; }
+
+  button { font: inherit; font-size: 12.5px; color: var(--fg); background: #21262d;
+    border: 1px solid var(--line); border-radius: 7px; padding: 7px 11px; cursor: pointer; }
+  button:active { background: #2a313a; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #0d1117; font-weight: 600; }
+
+  /* ---- 加入房間 ---- */
+  #gate { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px; padding: 24px;
+    background: var(--bg); text-align: center; }
+  #gate h1 { font-size: 21px; margin: 0; font-weight: 600; }
+  #gate p { color: var(--dim); font-size: 14px; margin: 0; line-height: 1.7; }
+  #roomInput { font-size: 30px; letter-spacing: .32em; text-align: center; width: 100%;
+    max-width: 280px; padding: 14px 10px 14px 20px; text-transform: uppercase;
+    font-family: ui-monospace, "Cascadia Mono", monospace;
+    color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  #gate button { font-size: 16px; padding: 13px 34px; background: var(--accent);
+    border-color: var(--accent); color: #0d1117; font-weight: 600; border-radius: 10px; }
+  #gateErr { color: var(--err); font-size: 13.5px; min-height: 19px; }
+
+  /* ---- 字幕 ---- */
+  main { flex: 1 1 auto; overflow-y: auto; padding: 20px 18px 40px;
+    -webkit-overflow-scrolling: touch; }
+  .line { padding: 14px 0; border-bottom: 1px solid #1a2029; animation: rise .3s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px) } }
+  .en { color: var(--dim); font-size: calc(var(--fs) * .62); line-height: 1.5; margin-bottom: 6px; }
+  body:not(.show-en) .en { display: none; }
+  .zh { color: var(--fg); font-size: var(--fs); line-height: 1.55; font-weight: 500;
+    font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif;
+    word-break: break-word; }
+  .zh.wait { color: var(--dim); }
+  .zh.wait::after { content: "翻譯中···"; font-size: calc(var(--fs) * .58); color: var(--accent);
+    animation: pulse 1.1s ease-in-out infinite; }
+  .zh.wait:not(:empty)::after { content: ""; }
+  .line.bad .zh { color: var(--err); font-size: calc(var(--fs) * .62); }
+
+  #waiting { color: var(--dim); font-size: 15px; line-height: 2; text-align: center; margin: 14vh auto 0; max-width: 420px; }
+
+  /* 使用者往上捲時，跳出「回到最新」 */
+  #jump { position: fixed; left: 50%; transform: translateX(-50%); bottom: 24px; z-index: 10;
+    display: none; background: var(--accent); color: #0d1117; font-weight: 600;
+    border: none; border-radius: 999px; padding: 11px 22px; font-size: 14px;
+    box-shadow: 0 6px 20px #0008; }
+  #jump.show { display: block; }
+</style>
+</head>
+<body class="show-en">
+
+<div id="gate">
+  <h1>會議即時字幕</h1>
+  <p>請輸入主辦方提供的房間碼</p>
+  <input id="roomInput" maxlength="8" autocapitalize="characters" autocomplete="off"
+         autocorrect="off" spellcheck="false" inputmode="latin" placeholder="————">
+  <button id="joinBtn">進入</button>
+  <div id="gateErr"></div>
+</div>
+
+<header>
+  <div class="pill"><span class="dot" id="dotNet"></span><span id="netText">連線中</span></div>
+  <div class="pill"><span class="dot" id="dotLive"></span><span id="liveText">等待開始</span></div>
+  <div class="spacer"></div>
+  <button id="toggleEn" class="on">英文</button>
+  <button id="fsDown">A−</button>
+  <button id="fsUp">A+</button>
+</header>
+
+<main id="stream">
+  <div id="waiting">等待講者開始…<br>字幕會自動出現在這裡。</div>
+</main>
+
+<button id="jump">↓ 回到最新</button>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const streamEl = $('stream'), waitingEl = $('waiting'), gate = $('gate');
+  const jumpBtn = $('jump');
+
+  let room = '';
+  let source = null;
+  let lastSeq = 0;
+  const nodes = new Map();   // seq -> { line, zh }
+
+  const setPill = (dotId, textId, text, kind) => {
+    $(dotId).className = 'dot' + (kind ? ' ' + kind : '');
+    $(textId).textContent = text;
+  };
+
+  const atBottom = () => streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 160;
+  const scrollDown = () => { streamEl.scrollTop = streamEl.scrollHeight; };
+
+  streamEl.addEventListener('scroll', () => jumpBtn.classList.toggle('show', !atBottom()));
+  jumpBtn.onclick = () => { scrollDown(); jumpBtn.classList.remove('show'); };
+
+  // ---------- 顯示偏好 ----------
+
+  let fontSize = Number(localStorage.getItem('fs')) || 26;
+  function applyFont() {
+    fontSize = Math.min(64, Math.max(16, fontSize));
+    document.documentElement.style.setProperty('--fs', fontSize + 'px');
+    localStorage.setItem('fs', String(fontSize));
+    if (atBottom()) scrollDown();
+  }
+  applyFont();
+  $('fsUp').onclick = () => { fontSize += 3; applyFont(); };
+  $('fsDown').onclick = () => { fontSize -= 3; applyFont(); };
+
+  let showEn = localStorage.getItem('showEn') !== '0';
+  function applyEn() {
+    document.body.classList.toggle('show-en', showEn);
+    $('toggleEn').classList.toggle('on', showEn);
+    localStorage.setItem('showEn', showEn ? '1' : '0');
+    if (atBottom()) scrollDown();
+  }
+  applyEn();
+  $('toggleEn').onclick = () => { showEn = !showEn; applyEn(); };
+
+  // ---------- 字幕渲染 ----------
+
+  function render(entry) {
+    let slot = nodes.get(entry.seq);
+    if (!slot) {
+      waitingEl.style.display = 'none';
+      const line = document.createElement('div');
+      line.className = 'line';
+      const en = document.createElement('div');
+      en.className = 'en';
+      const zh = document.createElement('div');
+      zh.className = 'zh';
+      line.append(en, zh);
+
+      // 依 seq 插入正確位置（重連補送時順序可能不是遞增的）
+      let placed = false;
+      for (const [seq, other] of nodes) {
+        if (seq > entry.seq) { streamEl.insertBefore(line, other.line); placed = true; break; }
+      }
+      if (!placed) streamEl.appendChild(line);
+
+      slot = { line, en, zh };
+      nodes.set(entry.seq, slot);
+    }
+
+    slot.en.textContent = entry.en || '';
+    slot.line.classList.toggle('bad', Boolean(entry.error));
+    if (entry.error) {
+      slot.zh.className = 'zh';
+      slot.zh.textContent = entry.error;
+    } else if (entry.pending) {
+      slot.zh.className = 'zh wait';
+      slot.zh.textContent = '';
+    } else {
+      slot.zh.className = 'zh';
+      slot.zh.textContent = entry.zh || '';
+    }
+
+    if (entry.seq > lastSeq) lastSeq = entry.seq;
+    if (atBottom()) scrollDown();
+
+    // 只留最近 200 句，長時間會議才不會把手機記憶體吃爆
+    while (nodes.size > 200) {
+      const oldest = nodes.keys().next().value;
+      nodes.get(oldest).line.remove();
+      nodes.delete(oldest);
+    }
+  }
+
+  // ---------- 連線 ----------
+
+  function connect() {
+    if (source) source.close();
+    setPill('dotNet', 'netText', '連線中', 'warn');
+
+    source = new EventSource(`/api/stream?room=${encodeURIComponent(room)}&since=${lastSeq}`);
+
+    source.onopen = () => setPill('dotNet', 'netText', '已連線', 'ok');
+
+    source.addEventListener('caption', (e) => {
+      try { render(JSON.parse(e.data)); } catch {}
+    });
+
+    source.addEventListener('status', (e) => {
+      try {
+        const s = JSON.parse(e.data);
+        setPill('dotLive', 'liveText', s.live ? '講者發言中' : '暫停中', s.live ? 'live' : '');
+      } catch {}
+    });
+
+    source.onerror = () => {
+      // EventSource 會自己重連，這裡只更新畫面狀態
+      setPill('dotNet', 'netText', '斷線，重連中…', 'warn');
+    };
+  }
+
+  // ---------- 加入房間 ----------
+
+  async function join(code) {
+    const value = String(code || '').trim().toUpperCase();
+    if (!value) return;
+    $('gateErr').textContent = '';
+
+    // 先驗一次房間碼，錯了立刻回報，而不是讓 EventSource 靜靜地無限重試
+    try {
+      const probe = await fetch(`/api/join?room=${encodeURIComponent(value)}`);
+      if (probe.status === 403) {
+        $('gateErr').textContent = '房間碼錯誤，請再確認一次。';
+        return;
+      }
+    } catch {
+      $('gateErr').textContent = '連不到伺服器，請確認網路。';
+      return;
+    }
+
+    room = value;
+    localStorage.setItem('room', room);
+    gate.style.display = 'none';
+    connect();
+    requestWakeLock();
+  }
+
+  $('joinBtn').onclick = () => join($('roomInput').value);
+  $('roomInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') join($('roomInput').value); });
+
+  const fromUrl = new URLSearchParams(location.search).get('room');
+  const saved = localStorage.getItem('room');
+  $('roomInput').value = (fromUrl || saved || '').toUpperCase();
+  if (fromUrl) join(fromUrl);
+  else if (saved) join(saved);
+  else $('roomInput').focus();
+
+  // ---------- 螢幕保持恆亮 ----------
+  // 觀眾整場都在看字幕，不希望手機自己鎖屏
+
+  let wakeLock = null;
+  async function requestWakeLock() {
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      if (room) requestWakeLock();
+      // 回到前景時 EventSource 可能已被系統凍結，補一次重連
+      if (source && source.readyState === EventSource.CLOSED) connect();
+    }
+  });
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+})();
+</script>
+</body>
+</html>

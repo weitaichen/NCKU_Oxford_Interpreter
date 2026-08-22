@@ -1,0 +1,33 @@
+# Render Blueprint —— 在 Render 選 New > Blueprint，指到這個 repo 就會自動建好服務。
+#
+# sync: false 的變數不會存在這個檔案裡，Render 會在建立時跳出來問你，
+# 填進去之後存在 Render 自己的加密環境變數裡。API key 不要寫進這個檔案。
+
+services:
+  - name: live-captions
+    type: web
+    runtime: node
+    plan: free
+    region: singapore          # 離台灣最近的節點，延遲最低
+    buildCommand: npm install  # 零相依，這步等於什麼都不做
+    startCommand: node server.mjs
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+
+      # ---- 祕密：Render 建立時會問你 ----
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ROOM_CODE
+        sync: false
+      - key: OPERATOR_KEY
+        sync: false
+
+      # ---- 一般設定 ----
+      - key: STT_LANGUAGE
+        value: en-GB
+      - key: STT_MODEL
+        value: nova-3

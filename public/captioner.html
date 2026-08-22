@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>收音台 · 會議即時字幕</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #262d36;
+    --dim: #8b98a6; --fg: #e8edf3; --accent: #58a6ff;
+    --live: #f0b429; --ok: #3fb950; --err: #f4776b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+
+  header { flex: none; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; white-space: nowrap; }
+  .spacer { flex: 1 1 auto; }
+
+  button, select, input {
+    font: inherit; font-size: 13px; color: var(--fg); background: #21262d;
+    border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px;
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: #3d4753; }
+  button:disabled { opacity: .4; cursor: default; }
+  input { font-family: ui-monospace, "Cascadia Mono", monospace; }
+
+  #toggle { min-width: 116px; font-weight: 600; background: var(--accent);
+    border-color: var(--accent); color: #0d1117; }
+  #toggle.on { background: var(--err); border-color: var(--err); color: #fff; }
+
+  .pill { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4a5561; flex: none; }
+  .dot.live { background: var(--err); animation: pulse 1.4s ease-in-out infinite; }
+  .dot.ok   { background: var(--ok); }
+  .dot.warn { background: var(--live); }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+
+  #banner { flex: none; display: none; padding: 11px 18px; font-size: 13.5px; line-height: 1.6;
+    background: #3d1d1a; border-bottom: 1px solid #5c2b26; color: #ffb3aa; }
+  #banner.show { display: block; }
+  #banner code { background: #00000055; padding: 1px 6px; border-radius: 4px; }
+
+  #setup { flex: none; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 10px 18px; background: #11161d; border-bottom: 1px solid var(--line); font-size: 13px; }
+  #setup label { color: var(--dim); }
+  #opKey { width: 140px; }
+
+  main { flex: 1 1 auto; overflow-y: auto; padding: 18px; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 26px;
+    padding: 12px 0; border-bottom: 1px solid #1b212a; animation: rise .25s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px) } }
+  .en { color: var(--dim); font-size: 15px; line-height: 1.55; }
+  .zh { color: var(--fg); font-size: 17px; line-height: 1.6;
+    font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif; }
+  .zh.wait::after { content: "···"; color: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+  .zh.bad { color: var(--err); font-size: 13px; }
+  @media (max-width: 860px) { .seg { grid-template-columns: 1fr; gap: 6px; } }
+
+  #hint { color: var(--dim); font-size: 14px; line-height: 2; max-width: 640px; margin: 6vh auto 0; text-align: center; }
+  #hint b { color: var(--fg); }
+
+  footer { flex: none; min-height: 54px; display: flex; align-items: center; gap: 16px;
+    padding: 12px 18px; background: var(--panel); border-top: 1px solid var(--line); }
+  #interim { flex: 1 1 auto; color: var(--live); font-size: 15px; font-style: italic;
+    line-height: 1.5; word-break: break-word; }
+  #interim:empty::before { content: "聆聽中…"; color: #4a5561; font-style: normal; }
+  body:not(.running) #interim:empty::before { content: ""; }
+  #meter { flex: none; width: 60px; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; }
+  #meterFill { height: 100%; width: 0%; background: var(--ok); transition: width .08s linear; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>收音台</h1>
+  <div class="pill"><span class="dot" id="dotStt"></span><span id="sttText">未開始</span></div>
+  <div class="pill"><span class="dot" id="dotNet"></span><span id="netText">—</span></div>
+  <div class="pill">👥 <span id="viewers">0</span> 位觀眾</div>
+  <div class="pill" title="本機保存的句數，重啟伺服器也不會消失">💾 <span id="saved">0</span> 句</div>
+  <div class="spacer"></div>
+  <button id="copyLink">複製觀眾網址</button>
+  <button id="download">下載逐字稿</button>
+  <button id="toggle">開始收音</button>
+</header>
+
+<div id="banner"></div>
+
+<div id="setup">
+  <label for="opKey">操作金鑰</label>
+  <input id="opKey" type="password" placeholder="啟動時印在終端機" autocomplete="off">
+  <label for="engine">引擎</label>
+  <select id="engine">
+    <option value="auto">自動（優先 Deepgram）</option>
+    <option value="deepgram">只用 Deepgram</option>
+    <option value="webspeech">只用 Web Speech 備援</option>
+  </select>
+  <span id="engineNow" style="color:var(--dim)"></span>
+</div>
+
+<main id="stream">
+  <div id="hint">
+    填入<b>操作金鑰</b>後按 <b>開始收音</b>，允許麥克風權限。<br>
+    講者的英文會即時辨識，翻成台灣中文後廣播給所有觀眾。<br>
+    <b>建議使用有線網路與指向性麥克風</b>，收音品質直接決定字幕品質。
+  </div>
+</main>
+
+<footer>
+  <div id="meter"><div id="meterFill"></div></div>
+  <div id="interim"></div>
+</footer>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const streamEl = $('stream'), hintEl = $('hint'), interimEl = $('interim');
+  const toggleBtn = $('toggle'), banner = $('banner'), opKeyInput = $('opKey');
+  const engineSel = $('engine'), engineNow = $('engineNow');
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  let config = null;
+  let running = false;
+  let engine = null;          // 'deepgram' | 'webspeech'
+  let seqLocal = 0;
+
+  // Deepgram 相關
+  let audioContext = null, mediaStream = null, workletNode = null, sourceNode = null, analyser = null;
+  let dgSocket = null, dgKeepAlive = null, dgPending = '';
+  let dgRestarts = [];
+
+  // Web Speech 相關
+  let recognition = null, wsRestarts = [];
+
+  // ---------- 小工具 ----------
+
+  const setPill = (dotId, textId, text, kind) => {
+    $(dotId).className = 'dot' + (kind ? ' ' + kind : '');
+    $(textId).textContent = text;
+  };
+  const showBanner = (html) => { banner.innerHTML = html; banner.classList.add('show'); };
+  const hideBanner = () => banner.classList.remove('show');
+
+  const atBottom = () => streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 140;
+  const scrollDown = () => { streamEl.scrollTop = streamEl.scrollHeight; };
+
+  const opKey = () => opKeyInput.value.trim();
+
+  // ---------- 本機逐字稿 ----------
+  // Render 免費方案沒有持久磁碟，伺服器一重啟 transcripts/ 就沒了。
+  // 收音頁本來就會收到每一句的譯文，所以真正可靠的那份留在這裡。
+
+  const today = () => new Date().toISOString().slice(0, 10);
+  const storeKey = (day) => `transcript-${day}`;
+
+  let session = [];
+  try {
+    session = JSON.parse(localStorage.getItem(storeKey(today())) || '[]');
+  } catch {
+    session = [];
+  }
+
+  let saveTimer = null;
+  function saveLocal() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(storeKey(today()), JSON.stringify(session));
+      } catch (err) {
+        showBanner('瀏覽器本機儲存已滿，逐字稿可能無法完整保存。請先按「下載逐字稿」存檔。');
+      }
+    }, 1500);
+  }
+
+  function record(en, zh) {
+    session.push({ t: new Date().toISOString(), en, zh });
+    $('saved').textContent = session.length;
+    saveLocal();
+  }
+  $('saved').textContent = session.length;
+
+  function savedDays() {
+    return Object.keys(localStorage)
+      .filter((k) => k.startsWith('transcript-'))
+      .map((k) => k.slice('transcript-'.length))
+      .sort();
+  }
+
+  opKeyInput.value = localStorage.getItem('opKey') || '';
+  opKeyInput.oninput = () => localStorage.setItem('opKey', opKeyInput.value.trim());
+  engineSel.value = localStorage.getItem('engine') || 'auto';
+  engineSel.onchange = () => localStorage.setItem('engine', engineSel.value);
+
+  // ---------- 設定 ----------
+
+  fetch('/api/config').then((r) => r.json()).then((cfg) => {
+    config = cfg;
+    $('viewers').textContent = cfg.viewers;
+    const notes = [];
+    if (!cfg.sttReady) notes.push('未設定 <code>DEEPGRAM_API_KEY</code>，將使用瀏覽器 Web Speech 備援（穩定度較低，僅適合測試）');
+    if (!cfg.translateReady) notes.push('未設定翻譯 API key（<code>GEMINI_API_KEY</code> 或 <code>ANTHROPIC_API_KEY</code>），觀眾只會看到英文');
+    if (notes.length) showBanner(notes.join('<br>'));
+  }).catch(() => showBanner('連不到伺服器，請確認 <code>node server.mjs</code> 還在執行。'));
+
+  // ---------- 字幕區塊 ----------
+
+  function addSegment(english) {
+    hintEl.style.display = 'none';
+    const node = document.createElement('div');
+    node.className = 'seg';
+    const en = document.createElement('div');
+    en.className = 'en';
+    en.textContent = english;
+    const zh = document.createElement('div');
+    zh.className = 'zh wait';
+    node.append(en, zh);
+    const stick = atBottom();
+    streamEl.appendChild(node);
+    if (stick) scrollDown();
+    return zh;
+  }
+
+  async function publish(english) {
+    const text = english.trim();
+    if (!text) return;
+    seqLocal++;
+    const zhNode = addSegment(text);
+    try {
+      const res = await fetch('/api/caption', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operatorKey: opKey(), en: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        zhNode.className = 'zh bad';
+        zhNode.textContent = data.error || `HTTP ${res.status}`;
+        if (res.status === 403) showBanner('操作金鑰錯誤。請填入伺服器啟動時印出的那組。');
+        return;
+      }
+      zhNode.className = 'zh';
+      zhNode.textContent = data.zh || (data.error ? '' : '（無譯文）');
+      if (data.error) {
+        zhNode.className = 'zh bad';
+        zhNode.textContent = data.error;
+      }
+      record(text, data.zh || '');
+      if (atBottom()) scrollDown();
+    } catch (err) {
+      zhNode.className = 'zh bad';
+      zhNode.textContent = '送出失敗：' + err.message;
+      record(text, '');   // 翻譯掛了也要留下英文原文
+    }
+  }
+
+  async function reportStatus(live) {
+    try {
+      const res = await fetch('/api/status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operatorKey: opKey(), live }),
+      });
+      const data = await res.json();
+      if (res.ok) $('viewers').textContent = data.viewers;
+    } catch {}
+  }
+
+  // ---------- 音量表 ----------
+
+  function pumpMeter() {
+    if (!running || !analyser) { $('meterFill').style.width = '0%'; return; }
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteTimeDomainData(buf);
+    let peak = 0;
+    for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+    $('meterFill').style.width = Math.min(100, (peak / 128) * 220) + '%';
+    requestAnimationFrame(pumpMeter);
+  }
+
+  // ---------- Deepgram ----------
+
+  async function startDeepgram() {
+    const tokenRes = await fetch('/api/stt-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ operatorKey: opKey() }),
+    });
+    const token = await tokenRes.json();
+    if (!tokenRes.ok) throw Object.assign(new Error(token.error || `HTTP ${tokenRes.status}`), { status: tokenRes.status });
+
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: false, noiseSuppression: true, autoGainControl: true },
+    });
+
+    audioContext = new AudioContext({ sampleRate: 16000 });
+    await audioContext.audioWorklet.addModule('/static/pcm-worklet.js');
+
+    sourceNode = audioContext.createMediaStreamSource(mediaStream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
+    sourceNode.connect(analyser);
+    sourceNode.connect(workletNode);
+
+    const params = new URLSearchParams({
+      access_token: token.accessToken,
+      model: token.model,
+      language: token.language,
+      encoding: 'linear16',
+      sample_rate: '16000',
+      channels: '1',
+      interim_results: 'true',
+      smart_format: 'true',
+      punctuate: 'true',
+      endpointing: '300',
+      utterance_end_ms: '1000',
+    });
+    // keyterm 只在 nova-3 有效，用來拉高專有名詞辨識率
+    for (const term of token.keyterms || []) params.append('keyterm', term);
+
+    dgSocket = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`);
+    dgSocket.binaryType = 'arraybuffer';
+
+    dgSocket.onopen = () => {
+      setPill('dotNet', 'netText', 'Deepgram 已連線', 'ok');
+      workletNode.port.onmessage = (e) => {
+        if (dgSocket?.readyState === WebSocket.OPEN) dgSocket.send(e.data.buffer);
+      };
+      // 講者停頓時避免連線被判定閒置而關閉
+      dgKeepAlive = setInterval(() => {
+        if (dgSocket?.readyState === WebSocket.OPEN) {
+          dgSocket.send(JSON.stringify({ type: 'KeepAlive' }));
+        }
+      }, 8000);
+    };
+
+    dgSocket.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+
+      if (msg.type === 'Results') {
+        const text = (msg.channel?.alternatives?.[0]?.transcript || '').trim();
+        if (msg.is_final) {
+          if (text) dgPending = dgPending ? dgPending + ' ' + text : text;
+          interimEl.textContent = dgPending;
+          // speech_final 代表這段話自然結束 —— 這時才整句送翻譯，避免翻到殘句
+          if (msg.speech_final && dgPending) {
+            publish(dgPending);
+            dgPending = '';
+            interimEl.textContent = '';
+          }
+        } else if (text) {
+          interimEl.textContent = (dgPending ? dgPending + ' ' : '') + text;
+        }
+      } else if (msg.type === 'UtteranceEnd') {
+        if (dgPending) { publish(dgPending); dgPending = ''; interimEl.textContent = ''; }
+      }
+    };
+
+    dgSocket.onerror = () => setPill('dotNet', 'netText', 'Deepgram 連線錯誤', 'warn');
+
+    dgSocket.onclose = () => {
+      clearInterval(dgKeepAlive);
+      if (!running) return;
+      const now = Date.now();
+      dgRestarts = dgRestarts.filter((t) => now - t < 60000);
+      dgRestarts.push(now);
+      if (dgRestarts.length > 6) {
+        showBanner('Deepgram 連線反覆中斷（1 分鐘內 6 次）。已切換到 Web Speech 備援模式。');
+        teardownAudio();
+        engine = 'webspeech';
+        engineNow.textContent = '目前：Web Speech（備援）';
+        startWebSpeech();
+        return;
+      }
+      setPill('dotNet', 'netText', '重新連線中…', 'warn');
+      teardownAudio();
+      setTimeout(() => { if (running) startDeepgram().catch(onFatal); }, 800);
+    };
+
+    setPill('dotStt', 'sttText', `收音中 · ${token.language}`, 'live');
+    requestAnimationFrame(pumpMeter);
+  }
+
+  function teardownAudio() {
+    clearInterval(dgKeepAlive);
+    try { if (workletNode) workletNode.port.onmessage = null; } catch {}
+    try { workletNode?.disconnect(); } catch {}
+    try { sourceNode?.disconnect(); } catch {}
+    try { audioContext?.close(); } catch {}
+    try { mediaStream?.getTracks().forEach((t) => t.stop()); } catch {}
+    workletNode = sourceNode = analyser = audioContext = mediaStream = null;
+    if (dgSocket) {
+      const sock = dgSocket;
+      dgSocket = null;
+      try {
+        if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: 'CloseStream' }));
+        sock.onclose = null;
+        sock.close();
+      } catch {}
+    }
+  }
+
+  // ---------- Web Speech 備援 ----------
+
+  function startWebSpeech() {
+    if (!SpeechRecognition) {
+      onFatal(new Error('這個瀏覽器不支援 Web Speech API，請用 Chrome 或 Edge。'));
+      return;
+    }
+    const rec = new SpeechRecognition();
+    rec.lang = config?.sttLanguage || 'en-GB';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+
+    const handled = new Set();
+
+    rec.onstart = () => {
+      setPill('dotStt', 'sttText', `收音中 · ${rec.lang}`, 'live');
+      setPill('dotNet', 'netText', 'Web Speech 備援', 'warn');
+    };
+
+    rec.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          if (!handled.has(i)) { handled.add(i); publish(result[0].transcript); }
+        } else {
+          interim += result[0].transcript;
+        }
+      }
+      interimEl.textContent = interim;
+    };
+
+    rec.onerror = (event) => {
+      if (event.error === 'no-speech' || event.error === 'aborted') return;
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        onFatal(new Error('麥克風權限被拒絕。點網址列左側鎖頭圖示改成允許，然後重新整理。'));
+        return;
+      }
+      setPill('dotNet', 'netText', '辨識錯誤：' + event.error, 'warn');
+    };
+
+    rec.onend = () => {
+      if (!running) return;
+      const now = Date.now();
+      wsRestarts = wsRestarts.filter((t) => now - t < 6000);
+      wsRestarts.push(now);
+      if (wsRestarts.length > 6) {
+        onFatal(new Error('語音辨識反覆中斷。請確認麥克風沒有被其他程式占用。'));
+        return;
+      }
+      setTimeout(() => { if (running) startWebSpeech(); }, 250);
+    };
+
+    recognition = rec;
+    try { rec.start(); } catch { setTimeout(() => { if (running) startWebSpeech(); }, 500); }
+  }
+
+  // ---------- 啟停 ----------
+
+  function onFatal(err) {
+    showBanner(err.message);
+    stop();
+  }
+
+  async function start() {
+    if (running) return;
+    if (!opKey()) { showBanner('請先填入操作金鑰（伺服器啟動時印在終端機上）。'); opKeyInput.focus(); return; }
+    hideBanner();
+    running = true;
+    dgRestarts = []; wsRestarts = []; dgPending = '';
+    document.body.classList.add('running');
+    toggleBtn.textContent = '停止收音';
+    toggleBtn.classList.add('on');
+    setPill('dotStt', 'sttText', '啟動中…', 'warn');
+
+    const choice = engineSel.value;
+    const wantDeepgram = choice === 'deepgram' || (choice === 'auto' && config?.sttReady);
+
+    if (wantDeepgram) {
+      engine = 'deepgram';
+      engineNow.textContent = '目前：Deepgram';
+      try {
+        await startDeepgram();
+      } catch (err) {
+        if (choice === 'deepgram') { onFatal(err); return; }
+        showBanner(`Deepgram 啟動失敗（${err.message}），已改用 Web Speech 備援。`);
+        engine = 'webspeech';
+        engineNow.textContent = '目前：Web Speech（備援）';
+        startWebSpeech();
+      }
+    } else {
+      engine = 'webspeech';
+      engineNow.textContent = '目前：Web Speech（備援）';
+      startWebSpeech();
+    }
+    reportStatus(true);
+  }
+
+  function stop() {
+    if (!running) return;
+    running = false;
+    document.body.classList.remove('running');
+    toggleBtn.textContent = '開始收音';
+    toggleBtn.classList.remove('on');
+    interimEl.textContent = '';
+    setPill('dotStt', 'sttText', '已停止');
+    setPill('dotNet', 'netText', '—');
+    engineNow.textContent = '';
+
+    if (dgPending) { publish(dgPending); dgPending = ''; }
+    teardownAudio();
+    try { if (recognition) { recognition.onend = null; recognition.stop(); } } catch {}
+    recognition = null;
+    reportStatus(false);
+  }
+
+  toggleBtn.onclick = () => (running ? stop() : start());
+
+  // ---------- 工具列 ----------
+
+  $('copyLink').onclick = async () => {
+    const room = prompt('房間碼（伺服器啟動時印出的那組）：', localStorage.getItem('room') || '');
+    if (!room) return;
+    localStorage.setItem('room', room.trim().toUpperCase());
+    const url = `${location.origin}/?room=${room.trim().toUpperCase()}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      $('copyLink').textContent = '已複製 ✓';
+    } catch {
+      prompt('手動複製這個網址：', url);
+    }
+    setTimeout(() => ($('copyLink').textContent = '複製觀眾網址'), 1800);
+  };
+
+  // 從本機副本產生檔案下載 —— 不經過伺服器，所以雲端重啟過也還在
+  function downloadDay(day) {
+    let rows = [];
+    try { rows = JSON.parse(localStorage.getItem(storeKey(day)) || '[]'); } catch {}
+    if (!rows.length) { showBanner(`${day} 沒有已保存的逐字稿。`); return; }
+
+    const text =
+      `會議逐字稿 ${day}\n共 ${rows.length} 句\n${'='.repeat(40)}\n\n` +
+      rows.map((r) => `[${r.t.slice(11, 19)}]\n${r.en}\n${r.zh}`).join('\n\n');
+
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transcript-${day}.txt`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  $('download').onclick = () => {
+    const days = savedDays();
+    if (!days.length) { showBanner('目前還沒有任何逐字稿。'); return; }
+    if (days.length === 1) { downloadDay(days[0]); return; }
+    const pick = prompt(`要下載哪一天？\n已保存：${days.join('、')}\n\n（輸入 all 可逐一下載全部）`, today());
+    if (!pick) return;
+    if (pick.trim().toLowerCase() === 'all') {
+      days.forEach((d, i) => setTimeout(() => downloadDay(d), i * 400));
+    } else {
+      downloadDay(pick.trim());
+    }
+  };
+
+  window.addEventListener('beforeunload', (e) => {
+    if (!running) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+# 祕密
+.env
+
+# 執行時產生
+node_modules/
+transcripts/
+
+# 第三方 Windows 工具，含 8.8MB 執行檔，不該進版控
+LiveCaptionsTranslator/
+
+# 舊版單機工具，已被取代
+archive-v1/
+
+# 別把 key 放純文字檔，用 .env
+*key*.txt
+*.key

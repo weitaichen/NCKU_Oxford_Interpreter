@@ -1,0 +1,19 @@
+{
+  "name": "會議即時字幕",
+  "short_name": "即時字幕",
+  "description": "會議現場英譯中即時字幕",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

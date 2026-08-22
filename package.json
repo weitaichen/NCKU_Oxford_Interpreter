@@ -1,0 +1,13 @@
+{
+  "name": "conference-live-captions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "會議即時英譯中字幕系統",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}
