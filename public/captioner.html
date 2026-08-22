@@ -117,7 +117,21 @@
     <option value="deepgram">只用 Deepgram</option>
     <option value="webspeech">只用 Web Speech 備援</option>
   </select>
+
+  <label for="mic">麥克風</label>
+  <select id="mic" style="max-width:210px"><option value="">預設</option></select>
+
+  <label for="lang">口音</label>
+  <select id="lang" title="辨識效果不好時換這個試試">
+    <option value="en-GB">en-GB 英國腔</option>
+    <option value="en-US">en-US 美國腔</option>
+    <option value="en">en 通用英文</option>
+    <option value="multi">multi 多語混講</option>
+  </select>
+
   <span id="engineNow" style="color:var(--dim)"></span>
+  <span id="audioInfo" style="color:var(--dim)"></span>
+  <span id="confInfo" style="color:var(--dim)"></span>
 </div>
 
 <main id="stream">
@@ -167,6 +181,7 @@
   let audioContext = null, mediaStream = null, workletNode = null, sourceNode = null, analyser = null;
   let dgSocket = null, dgKeepAlive = null, dgPending = '';
   let dgRestarts = [];
+  let confSamples = [];   // 最近的辨識信心分數
 
   // Web Speech 相關
   let recognition = null, wsRestarts = [];
@@ -229,6 +244,42 @@
   opKeyInput.oninput = () => localStorage.setItem('opKey', opKeyInput.value.trim());
   engineSel.value = localStorage.getItem('engine') || 'auto';
   engineSel.onchange = () => localStorage.setItem('engine', engineSel.value);
+
+  const micSel = $('mic');
+  const langSel = $('lang');
+
+  // ---------- 麥克風選擇 ----------
+  // 筆電內建麥克風的收音品質往往是辨識率最大的瓶頸，讓操作員能明確指定裝置。
+
+  async function refreshMicList() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mics = devices.filter((d) => d.kind === 'audioinput');
+      const current = micSel.value;
+      micSel.innerHTML = '<option value="">預設麥克風</option>';
+      for (const d of mics) {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        // 還沒拿到權限時 label 會是空的
+        opt.textContent = d.label || `麥克風 ${micSel.options.length}`;
+        micSel.appendChild(opt);
+      }
+      const saved = current || localStorage.getItem('mic') || '';
+      if ([...micSel.options].some((o) => o.value === saved)) micSel.value = saved;
+    } catch {}
+  }
+  refreshMicList();
+  navigator.mediaDevices?.addEventListener?.('devicechange', refreshMicList);
+  micSel.onchange = () => {
+    localStorage.setItem('mic', micSel.value);
+    if (running) showBanner('麥克風已變更，請按停止再重新開始收音才會生效。');
+  };
+
+  langSel.value = localStorage.getItem('lang') || 'en-GB';
+  langSel.onchange = () => {
+    localStorage.setItem('lang', langSel.value);
+    if (running) showBanner('辨識語言已變更，請按停止再重新開始收音才會生效。');
+  };
 
   // ---------- 設定 ----------
 
@@ -327,27 +378,44 @@
     const token = await tokenRes.json();
     if (!tokenRes.ok) throw Object.assign(new Error(token.error || `HTTP ${tokenRes.status}`), { status: tokenRes.status });
 
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: false, noiseSuppression: true, autoGainControl: true },
-    });
+    // 瀏覽器那三個音訊處理是為「人對人視訊通話」設計的，會為了人耳好聽而扭曲語音，
+    // 反而拉低辨識率。語音辨識模型訓練在原始音訊上，一律關掉。
+    const constraints = {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+    if (micSel.value) constraints.deviceId = { exact: micSel.value };
 
-    audioContext = new AudioContext({ sampleRate: 16000 });
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+    await refreshMicList();   // 拿到權限後裝置名稱才讀得到
+
+    // 不強制 16kHz —— 用麥克風原生取樣率（通常 48kHz），Deepgram 原生支援。
+    // 先前強制降採樣等於白白丟掉高頻資訊。
+    audioContext = new AudioContext();
+    const rate = audioContext.sampleRate;
     await audioContext.audioWorklet.addModule('/static/pcm-worklet.js');
 
     sourceNode = audioContext.createMediaStreamSource(mediaStream);
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 512;
-    workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
+    workletNode = new AudioWorkletNode(audioContext, 'pcm-processor', {
+      processorOptions: { chunkMs: 100 },
+    });
     sourceNode.connect(analyser);
     sourceNode.connect(workletNode);
+
+    const track = mediaStream.getAudioTracks()[0];
+    $('audioInfo').textContent = `${rate / 1000}kHz · ${track?.label?.slice(0, 28) || '預設麥克風'}`;
 
     if (token.warning) showBanner(token.warning);
 
     const params = new URLSearchParams({
       model: token.model,
-      language: token.language,
+      language: langSel.value || token.language,
       encoding: 'linear16',
-      sample_rate: '16000',
+      sample_rate: String(rate),
       channels: '1',
       interim_results: 'true',
       smart_format: 'true',
@@ -382,7 +450,19 @@
       try { msg = JSON.parse(event.data); } catch { return; }
 
       if (msg.type === 'Results') {
-        const text = (msg.channel?.alternatives?.[0]?.transcript || '').trim();
+        const alt = msg.channel?.alternatives?.[0];
+        const text = (alt?.transcript || '').trim();
+
+        // 顯示 Deepgram 自己的信心分數 —— 分數低就是收音問題，不是翻譯問題
+        if (msg.is_final && text && typeof alt?.confidence === 'number') {
+          confSamples.push(alt.confidence);
+          if (confSamples.length > 20) confSamples.shift();
+          const avg = confSamples.reduce((a, b) => a + b, 0) / confSamples.length;
+          const el = $('confInfo');
+          el.textContent = `信心 ${(avg * 100).toFixed(0)}%`;
+          el.style.color = avg >= 0.9 ? 'var(--ok)' : avg >= 0.75 ? 'var(--live)' : 'var(--err)';
+        }
+
         if (msg.is_final) {
           if (text) dgPending = dgPending ? dgPending + ' ' + text : text;
           interimEl.textContent = dgPending;
@@ -514,7 +594,8 @@
     if (!opKey()) { showBanner('請先填入操作金鑰（伺服器啟動時印在終端機上）。'); opKeyInput.focus(); return; }
     hideBanner();
     running = true;
-    dgRestarts = []; wsRestarts = []; dgPending = '';
+    dgRestarts = []; wsRestarts = []; dgPending = ''; confSamples = [];
+    $('confInfo').textContent = ''; $('audioInfo').textContent = '';
     document.body.classList.add('running');
     toggleBtn.textContent = '停止收音';
     toggleBtn.classList.add('on');

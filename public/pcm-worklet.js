@@ -1,10 +1,16 @@
-// 把麥克風的 Float32 音訊轉成 Deepgram 要的 linear16 PCM，每 100ms 送一塊。
-// AudioContext 已用 sampleRate: 16000 建立，所以這裡不需要自己降採樣。
+// 把麥克風的 Float32 音訊轉成 Deepgram 要的 linear16 PCM。
+//
+// 刻意「不」降採樣 —— 直接用 AudioContext 的原生取樣率（通常 48kHz）送出去，
+// Deepgram 原生支援。先前強制降到 16kHz 會白白丟掉高頻資訊，拉低辨識率。
+// sampleRate 是 AudioWorkletGlobalScope 的全域變數。
+
 class PCMProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
-    this.buffer = new Int16Array(1600); // 16000Hz x 0.1s
+    const chunkMs = options?.processorOptions?.chunkMs ?? 100;
+    this.buffer = new Int16Array(Math.max(256, Math.round((sampleRate * chunkMs) / 1000)));
     this.offset = 0;
+    this.port.postMessage({ type: 'ready', sampleRate, frames: this.buffer.length });
   }
 
   process(inputs) {
@@ -21,4 +27,5 @@ class PCMProcessor extends AudioWorkletProcessor {
     return true;
   }
 }
+
 registerProcessor('pcm-processor', PCMProcessor);
