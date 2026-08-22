@@ -31,3 +31,14 @@ services:
         value: en-GB
       - key: STT_MODEL
         value: nova-3
+
+      # 實測選出來的：p50 736ms、8 次零失敗、台灣繁中零問題。
+      # 不要用預設的 gemini-3.7-flash（免費層額度不足且 thinking 設定不相容）。
+      - key: TRANSLATE_PROVIDER
+        value: gemini
+      - key: TRANSLATE_MODEL
+        value: gemini-3.1-flash-lite
+
+      # 整理筆記一天只呼叫一次，用強一點的
+      - key: SUMMARY_MODEL
+        value: gemini-3.5-flash
