@@ -341,8 +341,9 @@
     sourceNode.connect(analyser);
     sourceNode.connect(workletNode);
 
+    if (token.warning) showBanner(token.warning);
+
     const params = new URLSearchParams({
-      access_token: token.accessToken,
       model: token.model,
       language: token.language,
       encoding: 'linear16',
@@ -357,7 +358,10 @@
     // keyterm 只在 nova-3 有效，用來拉高專有名詞辨識率
     for (const term of token.keyterms || []) params.append('keyterm', term);
 
-    dgSocket = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`);
+    // 瀏覽器的 WebSocket 沒辦法自訂 header，所以認證走 subprotocol。
+    // 實測：["token", credential] 可用；?access_token= 會被拒絕（close code 1006）。
+    const subprotocol = token.authMode === 'jwt' ? ['bearer', token.credential] : ['token', token.credential];
+    dgSocket = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`, subprotocol);
     dgSocket.binaryType = 'arraybuffer';
 
     dgSocket.onopen = () => {

@@ -194,6 +194,8 @@ const NOTES_SYSTEM_PROMPT = `你是專業的學術會議記錄整理者。使用
 
 // ------------------------------------------------------------------ 狀態
 
+let warnedDirectKey = false;   // 只在第一次退回直傳 key 時提醒一次
+
 const state = {
   seq: 0,
   backlog: [],          // 最近的字幕，給中途加入的觀眾補看
@@ -413,6 +415,12 @@ async function main() {
       if (!deepgramKey) {
         return sendJson(res, 503, { error: '尚未設定 DEEPGRAM_API_KEY，請改用 Web Speech 備援模式' });
       }
+      const common = {
+        language: sttLanguage,
+        model: sttModel,
+        keyterms: state.glossary.map((t) => t.en).filter(Boolean).slice(0, 100),
+      };
+
       try {
         const grant = await fetch('https://api.deepgram.com/v1/auth/grant', {
           method: 'POST',
@@ -420,22 +428,36 @@ async function main() {
           body: JSON.stringify({ ttl_seconds: 300 }),
           signal: AbortSignal.timeout(15_000),
         });
-        if (!grant.ok) {
-          const detail = await grant.text().catch(() => '');
-          return sendJson(res, grant.status, {
-            error:
-              grant.status === 401
-                ? 'Deepgram API key 無效'
-                : `Deepgram 發放 token 失敗（HTTP ${grant.status}）：${detail.slice(0, 200)}`,
-          });
+
+        if (grant.ok) {
+          const data = await grant.json();
+          // 首選：只把 300 秒的短期憑證交給瀏覽器，API key 留在伺服器
+          return sendJson(res, 200, { ...common, authMode: 'jwt', credential: data.access_token });
         }
-        const data = await grant.json();
+
+        if (grant.status === 401) {
+          return sendJson(res, 401, { error: 'Deepgram API key 無效' });
+        }
+
+        // 403 = 這把 key 沒有發放短期 token 的權限（scope 不足）。
+        // 但它仍然可以轉錄，所以退而求其次直接把 key 交給收音頁。
+        // 代價：拿得到操作金鑰的人就拿得到 Deepgram key。已在 UI 明確警告。
+        if (!warnedDirectKey) {
+          warnedDirectKey = true;
+          console.warn(
+            '\n[Deepgram] 這把 API key 無法發放短期 token（HTTP 403，scope 不足），' +
+              '已改為直接把 key 交給收音頁。\n' +
+              '           建議到 Deepgram 主控台另建一把 Owner 或 Admin 角色的 key，' +
+              '系統會自動改回較安全的短期 token 模式。\n'
+          );
+        }
         return sendJson(res, 200, {
-          accessToken: data.access_token,
-          expiresIn: data.expires_in,
-          language: sttLanguage,
-          model: sttModel,
-          keyterms: state.glossary.map((t) => t.en).filter(Boolean).slice(0, 100),
+          ...common,
+          authMode: 'key',
+          credential: deepgramKey,
+          warning:
+            '這把 Deepgram key 沒有發放短期 token 的權限，已直接以 API key 連線。' +
+            '功能正常，但 key 會出現在這個瀏覽器分頁裡。建議另建一把 Owner／Admin 角色的 key。',
         });
       } catch (err) {
         return sendJson(res, 502, { error: `連不上 Deepgram：${err.message}` });
