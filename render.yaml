@@ -8,7 +8,7 @@ services:
     type: web
     runtime: node
     plan: free
-    region: singapore          # 離台灣最近的節點，延遲最低
+    region: frankfurt         # 活動在牛津，用歐洲節點。原本設 singapore 會讓每個請求多繞地球半圈
     buildCommand: npm install  # 零相依，這步等於什麼都不做
     startCommand: node server.mjs
     healthCheckPath: /healthz
