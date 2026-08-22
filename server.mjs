@@ -96,14 +96,21 @@ async function callGemini({ apiKey, model, system, user, signal, maxTokens = 102
       signal,
     });
 
-  let res = await send(geminiThinking);
+  let res = await send(thinking);
 
-  if (res.status === 400 && geminiThinking) {
+  // 各代 Gemini 支援的 thinking 層級不一樣（例如 3.7-flash 就不吃 MINIMAL）。
+  // 被擋下來時往上退一級再試，最後才整個拿掉 —— 不要讓一個選用參數把字幕搞掛。
+  if (res.status === 400 && thinking) {
     const detail = await res.text().catch(() => '');
     if (/thinking/i.test(detail)) {
-      console.warn('[gemini] 此模型不支援 thinkingConfig，之後一律省略該欄位。');
-      geminiThinking = null;
-      res = await send(null);
+      for (const fallback of [{ thinkingLevel: 'low' }, null]) {
+        console.warn(`[gemini] ${model} 不接受 ${JSON.stringify(thinking)}，改試 ${JSON.stringify(fallback)}`);
+        res = await send(fallback);
+        if (res.ok) {
+          if (thinking === geminiThinking) geminiThinking = fallback;  // 記住，之後直接用
+          break;
+        }
+      }
     } else {
       throw Object.assign(new Error(detail.slice(0, 400)), { status: 400 });
     }

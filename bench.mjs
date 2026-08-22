@@ -234,7 +234,7 @@ console.log('（這是「送出英文句子」到「拿到完整中文譯文」�
 const results = [];
 
 if (gemKey) {
-  for (const m of ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3.7-flash']) {
+  for (const m of ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-3.5-flash']) {
     const r = await measure(`Gemini  ${m}`, geminiCall, m, gemKey);
     if (r) results.push(r);
   }
