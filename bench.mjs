@@ -140,6 +140,38 @@ async function makeAgentSdkRunner() {
   };
 }
 
+// ---- 品質檢查 ----
+// 速度快但翻出對岸用語就沒意義了，所以順便自動檢查譯文。
+
+// 只在簡體中文出現的字。譯文若含這些字，代表模型根本沒照「繁體」指示走。
+//
+// 這份清單只收「簡體專有」的字形。刻意排除了正繁體通用的字
+// （言、程、理、出、辨、後/后、於/于、內/内 等），否則每句正常譯文都會被誤報。
+const SIMPLIFIED = /[软网络数频认务标机盘项质让说学术时间这个们为从门问题实现发开关无与电脑语译单双击点线图样种业员会议课记录处设计统输]/;
+
+// 台灣不會這樣講的技術詞（即使寫成繁體也是對岸用法）
+const MAINLAND_TERMS = [
+  '軟件', '網絡', '數據', '視頻', '信息', '用戶', '界面', '默認',
+  '服務器', '鼠標', '打印機', '內存', '硬盤', '分辨率', '算法', '幻燈片',
+];
+
+// 半形標點直接貼著中文字 —— 提示詞要求全形
+const HALFWIDTH_PUNCT = /[一-鿿][,.?!;:]|[,.?!;:][一-鿿]/;
+
+function checkQuality(text) {
+  const issues = [];
+  const simp = text.match(new RegExp(SIMPLIFIED, 'g'));
+  if (simp) issues.push(`簡體字(${[...new Set(simp)].join('')})`);
+  for (const term of MAINLAND_TERMS) {
+    if (text.includes(term)) issues.push(`陸用語(${term})`);
+  }
+  if (HALFWIDTH_PUNCT.test(text)) issues.push('半形標點');
+  // 譯文裡不該出現這些多餘的框架
+  if (/^(翻譯|譯文|中文)\s*[:：]/.test(text)) issues.push('多餘前綴');
+  if (/^["「『].*["」』]$/.test(text.trim())) issues.push('多餘引號');
+  return issues;
+}
+
 // ---- 量測 ----
 
 function stats(list) {
@@ -157,8 +189,10 @@ function stats(list) {
 async function measure(label, fn, model, apiKey) {
   process.stdout.write(`  ${label.padEnd(34)} `);
   const times = [];
-  let sample = '';
+  const outputs = [];
+  const allIssues = [];
   let failed = 0;
+  let firstError = '';
 
   for (let i = 0; i < RUNS; i++) {
     const sentence = SENTENCES[i % SENTENCES.length];
@@ -166,25 +200,27 @@ async function measure(label, fn, model, apiKey) {
     try {
       const out = await fn(model, apiKey, sentence);
       times.push(performance.now() - t0);
-      if (!sample) sample = out;
-      process.stdout.write('.');
+      outputs.push({ en: sentence, zh: out });
+      const issues = checkQuality(out);
+      allIssues.push(...issues);
+      process.stdout.write(issues.length ? '!' : '.');
     } catch (err) {
       failed++;
       process.stdout.write('x');
-      if (failed === 1) sample = '錯誤：' + err.message;
+      if (!firstError) firstError = err.message;
     }
   }
 
   if (!times.length) {
-    console.log(`  全部失敗\n     ${sample}`);
+    console.log(`  全部失敗\n     ${firstError}`);
     return null;
   }
   const s = stats(times);
   console.log(
     `  p50 ${s.p50.toFixed(0).padStart(5)}ms   p95 ${s.p95.toFixed(0).padStart(5)}ms   ` +
-      `min ${s.min.toFixed(0)}  max ${s.max.toFixed(0)}${failed ? `  (${failed} 次失敗)` : ''}`
+      `品質問題 ${String(allIssues.length).padStart(2)}${failed ? `  (${failed} 次失敗)` : ''}`
   );
-  return { label, ...s, sample };
+  return { label, ...s, outputs, issues: allIssues, failed };
 }
 
 // ---- 主程 ----
@@ -228,21 +264,41 @@ if (!results.length) {
   process.exit(1);
 }
 
-results.sort((a, b) => a.p50 - b.p50);
-console.log('\n──────────────────────────────────────────────');
-console.log('由快到慢：\n');
-for (const r of results) {
-  console.log(`  ${r.p50.toFixed(0).padStart(5)}ms  ${r.label}`);
+console.log('\n══════════════════════════════════════════════════════════');
+console.log('速度排名（p50，含網路往返）\n');
+for (const r of [...results].sort((a, b) => a.p50 - b.p50)) {
+  const bar = '█'.repeat(Math.min(40, Math.round(r.p50 / 40)));
+  console.log(`  ${r.p50.toFixed(0).padStart(5)}ms  ${bar}  ${r.label}`);
 }
 
-const best = results[0];
-console.log('\n最快的譯文範例：');
-console.log(`  ${best.label}`);
-console.log(`  「${best.sample}」`);
+console.log('\n══════════════════════════════════════════════════════════');
+console.log('台灣繁中品質（問題越少越好）\n');
+for (const r of [...results].sort((a, b) => a.issues.length - b.issues.length)) {
+  const counts = {};
+  for (const i of r.issues) {
+    const kind = i.replace(/\(.*\)/, '');
+    counts[kind] = (counts[kind] || 0) + 1;
+  }
+  const detail = Object.entries(counts).map(([k, v]) => `${k}x${v}`).join('  ');
+  console.log(`  ${String(r.issues.length).padStart(2)} 個問題  ${r.label.padEnd(34)} ${detail || '乾淨'}`);
+}
 
-console.log('\n延遲預算參考：');
-console.log('  Deepgram 判定句子結束      ~300-500ms');
-console.log('  翻譯（上面量到的）          ?');
+console.log('\n══════════════════════════════════════════════════════════');
+console.log('同一句話，各家怎麼翻（自己看語感）\n');
+for (let i = 0; i < Math.min(3, SENTENCES.length); i++) {
+  console.log(`  EN  ${SENTENCES[i]}`);
+  for (const r of results) {
+    const hit = r.outputs.find((o) => o.en === SENTENCES[i]);
+    if (hit) console.log(`      ${r.label.padEnd(34)} ${hit.zh}`);
+  }
+  console.log('');
+}
+
+console.log('══════════════════════════════════════════════════════════');
+console.log('延遲預算參考：\n');
+console.log('  Deepgram 判定句子結束      ~300-500ms   （已設 endpointing=300）');
+console.log('  翻譯                        ← 上面量到的');
 console.log('  SSE 廣播到觀眾手機          ~50-150ms');
-console.log('  目標：中文字幕落後語音 1-2 秒');
-console.log('  => 翻譯這段的預算大約 500-1200ms\n');
+console.log('  ────────────────────────────────────────');
+console.log('  目標：中文落後語音 1-2 秒  =>  翻譯預算約 500-1200ms\n');
+console.log('決定方式：先看有沒有落在預算內，再從落在預算內的裡面挑品質最好的。\n');
