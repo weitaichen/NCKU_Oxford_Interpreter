@@ -14,3 +14,6 @@ archive-v1/
 # 別把 key 放純文字檔，用 .env
 *key*.txt
 *.key
+
+# 產生的金鑰候選，不要進版控
+OPERATOR_KEY候選.txt
