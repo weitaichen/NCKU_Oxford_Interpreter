@@ -574,7 +574,9 @@
       return;
     }
     const rec = new SpeechRecognition();
-    rec.lang = config?.sttLanguage || 'en-GB';
+    // Web Speech 只吃 BCP-47 語言標籤，沒有 Deepgram 那種 multi 混語模式
+    const picked = langSel.value === 'multi' ? 'en-GB' : langSel.value;
+    rec.lang = picked || config?.sttLanguage || 'en-GB';
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
