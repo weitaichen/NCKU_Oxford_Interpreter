@@ -113,9 +113,9 @@
   <input id="opKey" type="password" placeholder="啟動時印在終端機" autocomplete="off">
   <label for="engine">引擎</label>
   <select id="engine">
+    <option value="webspeech">Google Web Speech（預設，免費）</option>
+    <option value="deepgram">Deepgram（支援 keyterm）</option>
     <option value="auto">自動（優先 Deepgram）</option>
-    <option value="deepgram">只用 Deepgram</option>
-    <option value="webspeech">只用 Google（Web Speech）</option>
   </select>
 
   <label for="mic">麥克風</label>
@@ -261,7 +261,7 @@
 
   opKeyInput.value = localStorage.getItem('opKey') || '';
   opKeyInput.oninput = () => localStorage.setItem('opKey', opKeyInput.value.trim());
-  engineSel.value = localStorage.getItem('engine') || 'auto';
+  engineSel.value = localStorage.getItem('engine') || 'webspeech';
   engineSel.onchange = () => localStorage.setItem('engine', engineSel.value);
 
   const micSel = $('mic');
