@@ -50,25 +50,33 @@ const SYSTEM = `你是會議即時字幕的英譯中翻譯器。把英文口語�
 - 講者的填充詞（um、uh、you know、like、I mean、sort of）略去不譯。
 
 會議詞彙表（出現時必須照此處理）：
-- National Cheng Kung University → 國立成功大學
-- University of Oxford → 牛津大學
-- throughput → 吞吐量
-- large language model → 大型語言模型`;
+- Hertford College → 赫特福德學院
+- Bodleian Library → 博德利圖書館
+- collegiate system → 書院制
+- tutorial system → 導生制
+- Cowley → 考利
+- assembly line → 生產線
+- just-in-time → 及時生產
+- chiaroscuro → 明暗對照法
+- Industrial Revolution → 工業革命
+- change management → 變革管理`;
 
-// 12 句長度不一的真實演講句子，輪流使用避免快取效應
+// 刻意挑會考倒模型的句子：
+// (1) 語音辨識常見的殘句與口語贅詞  (2) 容易翻成對岸用語的科技詞
+// (3) 本次課程的專有名詞            (4) 數字與年份
 const SENTENCES = [
-  'Good morning everyone, and welcome to the symposium.',
-  'Today I want to talk about how large language models handle throughput at scale.',
-  'The key insight here is that latency and throughput are often in tension.',
-  'If you look at the chart on the left, you can see a clear downward trend after 2023.',
-  'This has significant implications for how we design inference infrastructure.',
-  'Let me give you a concrete example from our work at Oxford.',
-  'We measured a forty percent reduction in cost per token.',
-  'But that number alone does not tell the whole story.',
-  'The second experiment used a completely different methodology.',
-  'I will come back to this point in the final section of the talk.',
-  'Are there any questions before I move on?',
-  'Thank you, that is an excellent question and I want to address it carefully.',
+  'Good morning everyone, and welcome to Hertford College.',
+  'The software and network infrastructure here, the data quality is really quite good.',
+  'And so the collegiate system, which is, well, it is quite different from what you might expect.',
+  'If you look at the chart, you can see the trend after twenty twenty three.',
+  'Um, the tutorial system, you know, it means you meet your tutor once a week.',
+  'The Bodleian Library holds over thirteen million printed items.',
+  "Now, Britain's economy, after the Industrial Revolution, went through, um, several phases.",
+  'At the Cowley plant the assembly line runs on a just-in-time model.',
+  'This painting uses chiaroscuro to create a sense of depth and volume.',
+  'Change management is really about, I mean, how people respond to uncertainty.',
+  'Are there any questions before we break for lunch?',
+  'So the key point here, and I want you to remember this, is resilience.',
 ];
 
 const CONTEXT = 'And that brings me to the second half of the presentation.\nWe now turn to the practical side.';
