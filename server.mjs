@@ -205,6 +205,8 @@ const state = {
   glossary: [],
   keyterms: [],         // 只有標了 kt 的罕見專有名詞才送給 Deepgram
   recent: [],           // 給翻譯當上下文的最近幾句英文
+  notesCache: null,     // 觀眾端筆記快取，內容沒增加就不重算
+  notesPromise: null,   // 產生中的請求，讓同時按的人共用同一次呼叫
   startedAt: new Date().toISOString(),
 };
 
@@ -612,15 +614,37 @@ async function main() {
       } catch {
         return sendJson(res, 400, { error: '無法解析請求內容（逐字稿可能過大）' });
       }
-      if (body.operatorKey !== operatorKey) return sendJson(res, 403, { error: '操作員金鑰錯誤' });
+      // 操作員用操作金鑰；觀眾用房間碼即可，讓學生自己也能產生筆記
+      const isOperator = body.operatorKey === operatorKey;
+      const isViewer = body.room === roomCode;
+      if (!isOperator && !isViewer) {
+        return sendJson(res, 403, { error: '房間碼或操作金鑰錯誤' });
+      }
       if (!summaryKey) {
         return sendJson(res, 503, {
           error: `尚未設定 ${summaryProvider.keyEnv}，無法整理筆記`,
         });
       }
 
-      const rows = Array.isArray(body.rows) ? body.rows : state.transcript;
+      // 操作員可以指定自己瀏覽器裡那份完整副本；觀眾一律用伺服器保存的。
+      const rows =
+        isOperator && Array.isArray(body.rows) && body.rows.length ? body.rows : state.transcript;
       if (!rows.length) return sendJson(res, 400, { error: '沒有逐字稿可以整理' });
+
+      // 觀眾端走快取：十個學生同時按，只該真的算一次。
+      // 內容沒有增加就直接回上一份，全班也因此拿到一模一樣的筆記。
+      if (isViewer) {
+        if (state.notesCache && state.notesCache.seq === state.seq) {
+          return sendJson(res, 200, { ...state.notesCache, cached: true });
+        }
+        if (state.notesPromise) {
+          try {
+            return sendJson(res, 200, { ...(await state.notesPromise), cached: true });
+          } catch (err) {
+            return sendJson(res, 502, { error: `整理失敗：${String(err.message).slice(0, 200)}` });
+          }
+        }
+      }
 
       let text = rows.map((r) => `${r.en}\n${r.zh || ''}`).join('\n\n');
       let truncated = false;
@@ -636,8 +660,9 @@ async function main() {
         `以下是中英對照逐字稿，每組兩行（第一行英文原文、第二行中文翻譯）：\n\n${text}` +
         (truncated ? '\n\n（註：逐字稿過長已截斷，以上為前半部分）' : '');
 
-      try {
-        const notes = await summaryProvider.call({
+      const seqAtStart = state.seq;
+      const work = summaryProvider
+        .call({
           apiKey: summaryKey,
           model: summaryModel,
           system: NOTES_SYSTEM_PROMPT,
@@ -645,15 +670,27 @@ async function main() {
           maxTokens: 8192,
           thinking: null,        // 整理筆記讓模型好好想，不要壓思考
           signal: AbortSignal.timeout(300_000),
-        });
-        return sendJson(res, 200, {
+        })
+        .then((notes) => ({
           notes,
           sentences: rows.length,
           truncated,
           model: summaryModel,
           provider: summaryProviderName,
-        });
+          seq: seqAtStart,
+        }));
+
+      if (isViewer) state.notesPromise = work;
+
+      try {
+        const result = await work;
+        if (isViewer) {
+          state.notesCache = result;
+          state.notesPromise = null;
+        }
+        return sendJson(res, 200, result);
       } catch (err) {
+        if (isViewer) state.notesPromise = null;
         console.error('[summarize]', err.message);
         return sendJson(res, err.status || 502, {
           error: err.status === 401 ? `${summaryProvider.keyEnv} 無效` : `整理失敗：${err.message.slice(0, 300)}`,

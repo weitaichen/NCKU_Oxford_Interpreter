@@ -115,7 +115,7 @@
   <select id="engine">
     <option value="auto">自動（優先 Deepgram）</option>
     <option value="deepgram">只用 Deepgram</option>
-    <option value="webspeech">只用 Web Speech 備援</option>
+    <option value="webspeech">只用 Google（Web Speech）</option>
   </select>
 
   <label for="mic">麥克風</label>
@@ -127,6 +127,14 @@
     <option value="en-US">en-US 美國腔</option>
     <option value="en">en 通用英文</option>
     <option value="multi">multi 多語混講</option>
+  </select>
+
+  <label for="endpoint">斷句停頓</label>
+  <select id="endpoint" title="停頓多久算一句講完。講者常停頓就調長，可減少殘句">
+    <option value="300">300ms 最即時</option>
+    <option value="600">600ms</option>
+    <option value="800">800ms（建議，講座用）</option>
+    <option value="1200">1200ms 最完整</option>
   </select>
 
   <label for="minConf">信心門檻</label>
@@ -286,6 +294,13 @@
     if (running) showBanner('麥克風已變更，請按停止再重新開始收音才會生效。');
   };
 
+  const endpointSel = $('endpoint');
+  endpointSel.value = localStorage.getItem('endpoint') || '800';
+  endpointSel.onchange = () => {
+    localStorage.setItem('endpoint', endpointSel.value);
+    if (running) showBanner('斷句設定已變更，請按停止再重新開始收音才會生效。');
+  };
+
   const confSel = $('minConf');
   confSel.value = localStorage.getItem('minConf') ?? '0.6';
   confSel.onchange = () => localStorage.setItem('minConf', confSel.value);
@@ -436,8 +451,10 @@
       interim_results: 'true',
       smart_format: 'true',
       punctuate: 'true',
-      endpointing: '300',
-      utterance_end_ms: '1000',
+      // 停頓多久算「一句講完」。太短會把講者的自然停頓當句尾，
+      // 切出一堆殘句 —— 殘句缺上下文，辨識和翻譯都會變差。
+      endpointing: endpointSel.value,
+      utterance_end_ms: String(Math.max(1000, Number(endpointSel.value) + 400)),
     });
     // keyterm 只在 nova-3 有效，用來拉高專有名詞辨識率
     for (const term of token.keyterms || []) params.append('keyterm', term);
@@ -517,7 +534,7 @@
         showBanner('Deepgram 連線反覆中斷（1 分鐘內 6 次）。已切換到 Web Speech 備援模式。');
         teardownAudio();
         engine = 'webspeech';
-        engineNow.textContent = '目前：Web Speech（備援）';
+        engineNow.textContent = '目前：Google Web Speech';
         startWebSpeech();
         return;
       }
@@ -638,12 +655,12 @@
         if (choice === 'deepgram') { onFatal(err); return; }
         showBanner(`Deepgram 啟動失敗（${err.message}），已改用 Web Speech 備援。`);
         engine = 'webspeech';
-        engineNow.textContent = '目前：Web Speech（備援）';
+        engineNow.textContent = '目前：Google Web Speech';
         startWebSpeech();
       }
     } else {
       engine = 'webspeech';
-      engineNow.textContent = '目前：Web Speech（備援）';
+      engineNow.textContent = '目前：Google Web Speech';
       startWebSpeech();
     }
     reportStatus(true);

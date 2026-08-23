@@ -77,6 +77,27 @@
     border: none; border-radius: 999px; padding: 11px 22px; font-size: 14px;
     box-shadow: 0 6px 20px #0008; }
   #jump.show { display: block; }
+
+  /* ---- 筆記視窗 ---- */
+  #notesModal { position: fixed; inset: 0; z-index: 40; display: none; background: #000c; }
+  #notesModal.show { display: flex; }
+  #notesBox { margin: auto; width: 100%; max-width: 820px; height: 100%;
+    display: flex; flex-direction: column; background: var(--panel); }
+  @media (min-width: 700px) {
+    #notesModal { padding: 4vh 4vw; }
+    #notesBox { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  }
+  #notesHead { flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    padding-top: calc(12px + env(safe-area-inset-top)); }
+  #notesHead h2 { font-size: 15px; margin: 0; font-weight: 600; }
+  #notesMeta { font-size: 11.5px; color: var(--dim); }
+  #notesBody { flex: 1 1 auto; overflow-y: auto; padding: 18px 20px; margin: 0;
+    font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif;
+    font-size: 15px; line-height: 1.8; white-space: pre-wrap; word-break: break-word;
+    color: var(--fg); -webkit-overflow-scrolling: touch;
+    padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+  #notesBody.working { color: var(--dim); font-style: italic; }
 </style>
 </head>
 <body class="show-en">
@@ -94,6 +115,7 @@
   <div class="pill"><span class="dot" id="dotNet"></span><span id="netText">連線中</span></div>
   <div class="pill"><span class="dot" id="dotLive"></span><span id="liveText">等待開始</span></div>
   <div class="spacer"></div>
+  <button id="notes">產生筆記</button>
   <button id="toggleEn" class="on">英文</button>
   <button id="fsDown">A−</button>
   <button id="fsUp">A+</button>
@@ -104,6 +126,20 @@
 </main>
 
 <button id="jump">↓ 回到最新</button>
+
+<div id="notesModal">
+  <div id="notesBox">
+    <div id="notesHead">
+      <h2>課程筆記</h2>
+      <span id="notesMeta"></span>
+      <div class="spacer"></div>
+      <button id="notesCopy">複製</button>
+      <button id="notesSave">下載</button>
+      <button id="notesClose">關閉</button>
+    </div>
+    <pre id="notesBody"></pre>
+  </div>
+</div>
 
 <script>
 (() => {
@@ -278,6 +314,71 @@
       if (source && source.readyState === EventSource.CLOSED) connect();
     }
   });
+
+  // ---------- 產生課程筆記 ----------
+  // 用伺服器保存的完整逐字稿，不是這支手機收到的那份 ——
+  // 中途才加入或斷線過的同學，一樣拿得到完整內容。
+  // 伺服器端有快取，全班同時按也只會真的算一次。
+
+  const notesModal = $('notesModal');
+  const notesBody = $('notesBody');
+  let notesText = '';
+
+  $('notes').onclick = async () => {
+    if (!room) return;
+    notesModal.classList.add('show');
+    notesBody.className = 'working';
+    notesBody.textContent = '正在整理課程筆記…\n\n內容較長時可能需要一兩分鐘。\n如果同學已經產生過，會立刻顯示。';
+    $('notesMeta').textContent = '';
+
+    try {
+      const res = await fetch('/api/summarize', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ room }),
+      });
+      const data = await res.json();
+      notesBody.className = '';
+      if (!res.ok) {
+        notesBody.textContent = '產生失敗：' + (data.error || `HTTP ${res.status}`);
+        return;
+      }
+      notesText = data.notes || '';
+      notesBody.textContent = notesText || '（目前還沒有足夠的內容可以整理）';
+      $('notesMeta').textContent =
+        `${data.sentences} 句${data.cached ? ' · 已有同學產生過' : ''}${data.truncated ? ' · 內容過長已截斷' : ''}`;
+    } catch (err) {
+      notesBody.className = '';
+      notesBody.textContent = '產生失敗：' + err.message;
+    }
+  };
+
+  $('notesClose').onclick = () => notesModal.classList.remove('show');
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') notesModal.classList.remove('show');
+  });
+
+  $('notesCopy').onclick = async () => {
+    if (!notesText) return;
+    try {
+      await navigator.clipboard.writeText(notesText);
+      $('notesCopy').textContent = '已複製';
+    } catch {
+      $('notesCopy').textContent = '複製失敗';
+    }
+    setTimeout(() => ($('notesCopy').textContent = '複製'), 1600);
+  };
+
+  $('notesSave').onclick = () => {
+    if (!notesText) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const url = URL.createObjectURL(new Blob([notesText], { type: 'text/markdown;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `課程筆記-${day}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
