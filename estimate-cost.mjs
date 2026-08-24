@@ -21,8 +21,11 @@ const PRICES = {
   'claude-haiku-4-5': { in: 1, out: 5, cacheRead: 0.10, cacheWrite: 1.25 },
   'claude-sonnet-5': { in: 2, out: 10, cacheRead: 0.20, cacheWrite: 2.50 },
   'claude-opus-5': { in: 5, out: 25, cacheRead: 0.50, cacheWrite: 6.25 },
+  // Gemini 官方價目表（付費層）。3.7-flash 的 $0.75/$3.75 是 2026 年底前的優惠價，
+  // 2027/1/1 起漲為 $1.50/$7.50。
   'gemini-3.1-flash-lite': { in: 0.25, out: 1.50, cacheRead: null },
-  'gemini-3.5-flash': { in: 0.50, out: 3.00, cacheRead: null },
+  'gemini-3.7-flash': { in: 0.75, out: 3.75, cacheRead: null },
+  'gemini-3.5-flash': { in: 1.50, out: 9.00, cacheRead: null },
 };
 
 // 粗略但夠用的估算：中日韓字約 1 字 1 token，其餘約 4 字元 1 token
@@ -132,21 +135,21 @@ for (const [model, p] of Object.entries(PRICES)) {
 
 // ---- 總計 ----
 
-const haiku = rows.find((r) => r.model === 'claude-haiku-4-5');
-const pSonnet = PRICES['claude-sonnet-5'];
-const notesSonnet =
-  (notesRuns * (transcriptTokens + NOTES_SYS_TOKENS) / 1e6) * pSonnet.in +
-  (notesRuns * notesOut / 1e6) * pSonnet.out;
+const lite = rows.find((r) => r.model === 'gemini-3.1-flash-lite');
+const pNotes = PRICES['gemini-3.7-flash'];
+const notesCost =
+  (notesRuns * (transcriptTokens + NOTES_SYS_TOKENS) / 1e6) * pNotes.in +
+  (notesRuns * notesOut / 1e6) * pNotes.out;
 
 console.log('\n' + '='.repeat(62));
-console.log('  建議組合總計');
+console.log('  建議組合總計（全部用同一把 Gemini key）');
 console.log('='.repeat(62));
 console.log('  語音辨識  Google Web Speech          US$0.00   （瀏覽器內建，免費）');
-console.log(`  即時翻譯  Claude Haiku 4.5 + 快取    US$${haiku.cached.toFixed(2)}`);
-console.log(`  整理筆記  Claude Sonnet 5            US$${notesSonnet.toFixed(2)}`);
+console.log(`  即時翻譯  gemini-3.1-flash-lite      US$${lite.noCache.toFixed(2)}`);
+console.log(`  整理筆記  gemini-3.7-flash           US$${notesCost.toFixed(2)}`);
 console.log('  伺服器    Render 免費方案            US$0.00');
 console.log('  ' + '-'.repeat(58));
-const total = haiku.cached + notesSonnet;
+const total = lite.noCache + notesCost;
 console.log(`  合計                                 US$${total.toFixed(2)}   （約 NT$${Math.round(total * 32)}）\n`);
 console.log('  註：以上為估算。實際 token 數依講者語速、口音、內容而異，');
 console.log('      抓 1.5 倍當上限比較保險。\n');
