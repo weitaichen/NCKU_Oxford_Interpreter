@@ -130,6 +130,7 @@
   <div class="pill">👥 <span id="viewers">0</span> 位觀眾</div>
   <div class="pill" title="本機保存的句數，重啟伺服器也不會消失">💾 <span id="saved">0</span> 句</div>
   <div class="spacer"></div>
+  <button id="micTest" title="不開始收音，只確認麥克風權限與音量">測試麥克風</button>
   <button id="setupToggle" title="顯示或收起設定">⚙</button>
   <button id="copyLink" class="wide-only">複製觀眾網址</button>
   <button id="download" class="wide-only">下載逐字稿</button>
@@ -228,6 +229,13 @@
   // 設得寬鬆是刻意的 —— 正常講話會有停頓，這只是極端情況的保險。
   const MAX_PENDING_MS = 15000;
 
+  // iOS Safari 的 Web Speech API 在連續辨識下是壞的：麥克風不會停、
+  // 拿不到結果、加到主畫面後完全失效。iPhone 一律走 Deepgram
+  // （getUserMedia + AudioWorklet 在 iOS 上是可靠的）。
+  const IS_IOS =
+    /iP(hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.userAgent.includes('Mac') && 'ontouchend' in document);
+
   let config = null;
   let running = false;
   let engine = null;          // 'deepgram' | 'webspeech'
@@ -301,7 +309,10 @@
 
   opKeyInput.value = localStorage.getItem('opKey') || '';
   opKeyInput.oninput = () => localStorage.setItem('opKey', opKeyInput.value.trim());
-  engineSel.value = localStorage.getItem('engine') || 'webspeech';
+  engineSel.value = localStorage.getItem('engine') || (IS_IOS ? 'deepgram' : 'webspeech');
+  if (IS_IOS) {
+    engineSel.querySelector('[value="webspeech"]').textContent = 'Google Web Speech（iPhone 不建議）';
+  }
   engineSel.onchange = () => localStorage.setItem('engine', engineSel.value);
 
   const micSel = $('mic');
@@ -335,6 +346,8 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible' || !running) return;
     if (!wakeLock) keepAwake();
+    // iOS 切回前景後 AudioContext 會維持 suspended，必須主動喚醒
+    if (audioContext?.state === 'suspended') audioContext.resume().catch(() => {});
     if (engine === 'webspeech' && recognition) {
       // Web Speech 被凍結後不一定會觸發 onend，主動重啟一次比較保險
       try { recognition.stop(); } catch {}
@@ -526,6 +539,11 @@
     // 不強制 16kHz —— 用麥克風原生取樣率（通常 48kHz），Deepgram 原生支援。
     // 先前強制降採樣等於白白丟掉高頻資訊。
     audioContext = new AudioContext();
+    // iOS Safari 常常讓 AudioContext 以 suspended 狀態啟動 ——
+    // 不會報錯，但音訊完全不會流動，看起來就像「連上了卻沒字幕」。
+    if (audioContext.state === 'suspended') {
+      try { await audioContext.resume(); } catch {}
+    }
     const rate = audioContext.sampleRate;
     await audioContext.audioWorklet.addModule('/static/pcm-worklet.js');
 
@@ -540,6 +558,22 @@
 
     const track = mediaStream.getAudioTracks()[0];
     $('audioInfo').textContent = `${rate / 1000}kHz · ${track?.label?.slice(0, 28) || '預設麥克風'}`;
+
+    // 連上了卻一直沒有聲音是最難自己發現的故障，主動檢查並提示
+    setTimeout(() => {
+      if (!running || !analyser) return;
+      if (audioContext?.state === 'suspended') {
+        showBanner('音訊被瀏覽器暫停了。請點一下畫面任意處，或按停止後重新開始收音。');
+        return;
+      }
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteTimeDomainData(buf);
+      let peak = 0;
+      for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      if (peak < 2) {
+        showBanner('麥克風已連上，但<b>收不到任何聲音</b>。請按「測試麥克風」確認，或換一支裝置。');
+      }
+    }, 5000);
 
     if (token.warning) showBanner(token.warning);
 
@@ -684,6 +718,24 @@
 
   // ---------- Web Speech 備援 ----------
 
+  // 先用 getUserMedia 明確索取一次權限再啟動辨識。
+  // 只靠 recognition.start() 觸發權限提示在部分瀏覽器（尤其手機）不可靠，
+  // 會變成「按了沒反應、也沒跳權限」。拿到後立刻釋放，交還給辨識引擎。
+  async function ensureMicPermission() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      return true;
+    } catch (err) {
+      onFatal(
+        err.name === 'NotAllowedError'
+          ? '麥克風權限被拒絕。請點網址列旁的權限圖示改成允許；iPhone 請到「設定 → Safari → 麥克風」確認。'
+          : `無法取得麥克風：${err.message}`
+      );
+      return false;
+    }
+  }
+
   function startWebSpeech() {
     if (!SpeechRecognition) {
       onFatal(new Error('這個瀏覽器不支援 Web Speech API，請用 Chrome 或 Edge。'));
@@ -753,6 +805,19 @@
   async function start() {
     if (running) return;
     if (!opKey()) { showBanner('請先填入操作金鑰（伺服器啟動時印在終端機上）。'); opKeyInput.focus(); return; }
+
+    // 非安全來源時瀏覽器不會給麥克風，而且不會有任何提示，很容易誤判成程式壞了
+    if (!window.isSecureContext) {
+      showBanner(
+        '這個網址不是安全來源，瀏覽器<b>不會</b>詢問麥克風權限。' +
+        '請改用 <code>https://</code> 的網址（例如 Render 上的網址），或在本機用 <code>localhost</code>。'
+      );
+      return;
+    }
+    if (IS_IOS && engineSel.value === 'webspeech') {
+      showBanner('iPhone 的 Safari 在連續辨識下拿不到結果，請把「引擎」改成 Deepgram。');
+      return;
+    }
     hideBanner();
     running = true;
     dgRestarts = []; wsRestarts = []; dgPending = ''; confSamples = []; dropped = 0;
@@ -781,6 +846,7 @@
     } else {
       engine = 'webspeech';
       engineNow.textContent = '目前：Google Web Speech';
+      if (!(await ensureMicPermission())) return;
       startWebSpeech();
     }
     reportStatus(true);
@@ -807,6 +873,66 @@
   }
 
   toggleBtn.onclick = () => (running ? stop() : start());
+
+  // 獨立的麥克風測試：不啟動辨識、不花任何 API 費用，
+  // 純粹確認「權限有沒有給」和「聲音有沒有進來」。
+  $('micTest').onclick = async () => {
+    if (running) { showBanner('請先停止收音再測試麥克風。'); return; }
+    if (!window.isSecureContext) {
+      showBanner('這個網址不是安全來源，瀏覽器不會詢問麥克風權限。請改用 <code>https://</code> 的網址。');
+      return;
+    }
+    const btn = $('micTest');
+    btn.textContent = '請求權限…';
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: micSel.value ? { deviceId: { exact: micSel.value } } : true,
+      });
+    } catch (err) {
+      btn.textContent = '測試麥克風';
+      showBanner(
+        err.name === 'NotAllowedError'
+          ? '麥克風權限被拒絕。iPhone 請到「設定 → Safari → 麥克風」，或點網址列的 <b>ᴀA</b> → 網站設定 → 麥克風 → 允許。'
+          : `無法取得麥克風：${err.name} ${err.message}`
+      );
+      return;
+    }
+
+    hideBanner();
+    await refreshMicList();
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser();
+    an.fftSize = 512;
+    src.connect(an);
+    const buf = new Uint8Array(an.frequencyBinCount);
+    let peakSeen = 0;
+    const until = Date.now() + 6000;
+
+    (function tick() {
+      an.getByteTimeDomainData(buf);
+      let peak = 0;
+      for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      peakSeen = Math.max(peakSeen, peak);
+      $('meterFill').style.width = Math.min(100, (peak / 128) * 220) + '%';
+      const left = Math.ceil((until - Date.now()) / 1000);
+      btn.textContent = `請說話…${left}s`;
+      if (Date.now() < until) return requestAnimationFrame(tick);
+
+      stream.getTracks().forEach((t) => t.stop());
+      ctx.close();
+      $('meterFill').style.width = '0%';
+      btn.textContent = '測試麥克風';
+      const label = stream.getAudioTracks()[0]?.label || '預設麥克風';
+      if (peakSeen < 4) {
+        showBanner(`權限正常，但<b>幾乎沒有收到聲音</b>（${label}）。請確認麥克風沒有被靜音、或換一支裝置。`);
+      } else {
+        showBanner(`✓ 麥克風正常（${label}），音量峰值 ${Math.round((peakSeen / 128) * 100)}%。可以開始收音了。`);
+        setTimeout(hideBanner, 6000);
+      }
+    })();
+  };
 
   // ---------- 工具列 ----------
 
