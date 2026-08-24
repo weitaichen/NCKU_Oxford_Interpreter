@@ -169,6 +169,7 @@
   <span id="audioInfo" style="color:var(--dim)"></span>
   <span id="confInfo" style="color:var(--dim)"></span>
   <span id="dropInfo" style="color:var(--dim)"></span>
+  <span id="holdInfo" style="color:var(--dim)"></span>
 </div>
 
 <main id="stream">
@@ -211,6 +212,10 @@
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+  // 講者連續講不停時，最多讓中文延後這麼久才出現。
+  // 設得寬鬆是刻意的 —— 正常講話會有停頓，這只是極端情況的保險。
+  const MAX_PENDING_MS = 15000;
+
   let config = null;
   let running = false;
   let engine = null;          // 'deepgram' | 'webspeech'
@@ -219,6 +224,8 @@
   // Deepgram 相關
   let audioContext = null, mediaStream = null, workletNode = null, sourceNode = null, analyser = null;
   let dgSocket = null, dgKeepAlive = null, dgPending = '';
+  let dgPendingSince = 0, dgWatchdog = null, forcedFlushes = 0;
+  let lastInterimSent = '', interimTimer = null;
   let dgRestarts = [];
   let confSamples = [];   // 最近的辨識信心分數
   let dropped = 0;        // 因信心過低被丟棄的句數
@@ -395,6 +402,31 @@
     }
   }
 
+  // 把已定稿的內容送出翻譯並廣播
+  function flushDgPending() {
+    if (!dgPending) return;
+    publish(dgPending);
+    dgPending = '';
+    dgPendingSince = 0;
+    interimEl.textContent = '';
+    sendInterim('');
+  }
+
+  // 即時英文推播給觀眾 —— 讓學生看到的跟收音頁一樣，
+  // 不必等整句講完才有東西可看。節流避免打爆伺服器。
+  function sendInterim(text) {
+    if (text === lastInterimSent) return;
+    lastInterimSent = text;
+    clearTimeout(interimTimer);
+    interimTimer = setTimeout(() => {
+      fetch('/api/interim', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operatorKey: opKey(), text: lastInterimSent }),
+      }).catch(() => {});
+    }, 250);
+  }
+
   async function reportStatus(live) {
     try {
       const res = await fetch('/api/status', {
@@ -491,6 +523,17 @@
       workletNode.port.onmessage = (e) => {
         if (dgSocket?.readyState === WebSocket.OPEN) dgSocket.send(e.data.buffer);
       };
+      // 保險：講者若長時間毫無停頓，speech_final 一直不觸發，中文就會遲遲不出現。
+      // is_final 的文字 Deepgram 不會再修改，所以提前送出是安全的，
+      // 代價只是斷句可能落在句子中間。門檻設得寬，正常講話不會觸發。
+      dgWatchdog = setInterval(() => {
+        if (dgPending && dgPendingSince && Date.now() - dgPendingSince >= MAX_PENDING_MS) {
+          forcedFlushes++;
+          $('holdInfo').textContent = `連續語句已強制斷句 ${forcedFlushes} 次`;
+          flushDgPending();
+        }
+      }, 1000);
+
       // 講者停頓時避免連線被判定閒置而關閉
       dgKeepAlive = setInterval(() => {
         if (dgSocket?.readyState === WebSocket.OPEN) {
@@ -528,18 +571,19 @@
           } else if (text) {
             dgPending = dgPending ? dgPending + ' ' + text : text;
           }
+          if (dgPending && !dgPendingSince) dgPendingSince = Date.now();
           interimEl.textContent = dgPending;
           // speech_final 代表這段話自然結束 —— 這時才整句送翻譯，避免翻到殘句
           if (msg.speech_final && dgPending) {
-            publish(dgPending);
-            dgPending = '';
-            interimEl.textContent = '';
+            flushDgPending();
           }
         } else if (text) {
-          interimEl.textContent = (dgPending ? dgPending + ' ' : '') + text;
+          const live = (dgPending ? dgPending + ' ' : '') + text;
+          interimEl.textContent = live;
+          sendInterim(live);
         }
       } else if (msg.type === 'UtteranceEnd') {
-        if (dgPending) { publish(dgPending); dgPending = ''; interimEl.textContent = ''; }
+        flushDgPending();
       }
     };
 
@@ -572,6 +616,7 @@
 
   function teardownAudio() {
     clearInterval(dgKeepAlive);
+    clearInterval(dgWatchdog);
     try { if (workletNode) workletNode.port.onmessage = null; } catch {}
     try { workletNode?.disconnect(); } catch {}
     try { sourceNode?.disconnect(); } catch {}
@@ -616,12 +661,13 @@
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         if (result.isFinal) {
-          if (!handled.has(i)) { handled.add(i); publish(result[0].transcript); }
+          if (!handled.has(i)) { handled.add(i); publish(result[0].transcript); sendInterim(''); }
         } else {
           interim += result[0].transcript;
         }
       }
       interimEl.textContent = interim;
+      sendInterim(interim);
     };
 
     rec.onerror = (event) => {
@@ -702,7 +748,8 @@
     setPill('dotNet', 'netText', '—');
     engineNow.textContent = '';
 
-    if (dgPending) { publish(dgPending); dgPending = ''; }
+    flushDgPending();
+    sendInterim('');
     teardownAudio();
     try { if (recognition) { recognition.onend = null; recognition.stop(); } } catch {}
     recognition = null;

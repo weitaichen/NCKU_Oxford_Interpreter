@@ -71,6 +71,15 @@
 
   #waiting { color: var(--dim); font-size: 15px; line-height: 2; text-align: center; margin: 14vh auto 0; max-width: 420px; }
 
+  /* 講者正在說、但還沒翻譯的英文。跟收音端看到的一樣即時。 */
+  #liveLine { flex: none; padding: 12px 18px; background: var(--panel);
+    border-top: 1px solid var(--line); color: var(--warn);
+    font-size: calc(var(--fs) * .58); line-height: 1.5; font-style: italic;
+    word-break: break-word; max-height: 22vh; overflow-y: auto;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  #liveLine:empty { display: none; }
+  body:not(.show-en) #liveLine { display: none; }
+
   /* 使用者往上捲時，跳出「回到最新」 */
   #jump { position: fixed; left: 50%; transform: translateX(-50%); bottom: 24px; z-index: 10;
     display: none; background: var(--accent); color: #0d1117; font-weight: 600;
@@ -143,6 +152,8 @@
 <main id="stream">
   <div id="waiting">等待講者開始…<br>字幕會自動出現在這裡。</div>
 </main>
+
+<div id="liveLine"></div>
 
 <button id="jump">↓ 回到最新</button>
 
@@ -247,7 +258,7 @@
       slot.zh.textContent = entry.zh || '';
     }
 
-    if (entry.seq > lastSeq) lastSeq = entry.seq;
+    if (entry.seq > lastSeq) { lastSeq = entry.seq; $('liveLine').textContent = ''; }
     if (atBottom()) scrollDown();
 
     // 只留最近 200 句，長時間會議才不會把手機記憶體吃爆
@@ -270,6 +281,15 @@
 
     source.addEventListener('caption', (e) => {
       try { render(JSON.parse(e.data)); } catch {}
+    });
+
+    // 講者正在說的英文（未定稿）。收到正式字幕時會被清掉。
+    source.addEventListener('interim', (e) => {
+      try {
+        const stick = atBottom();
+        $('liveLine').textContent = JSON.parse(e.data).text || '';
+        if (stick) scrollDown();
+      } catch {}
     });
 
     source.addEventListener('status', (e) => {

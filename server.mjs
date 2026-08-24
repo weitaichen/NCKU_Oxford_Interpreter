@@ -521,6 +521,21 @@ async function main() {
       return sendJson(res, 200, { seq, zh: entry.zh, error: entry.error ?? null });
     }
 
+    // ---- 操作員：推播「正在聽到的英文」給觀眾 ----
+    // 讓觀眾看到的跟收音頁一樣即時，不必等整句講完才有東西可看。
+    // 這條路徑刻意不翻譯、不編號、不存檔 —— 它只是暫時的畫面，隨時會被改寫。
+    if (req.method === 'POST' && path === '/api/interim') {
+      let body;
+      try {
+        body = JSON.parse(await readBody(req, 32 * 1024));
+      } catch {
+        return sendJson(res, 400, { error: '無法解析請求內容' });
+      }
+      if (body.operatorKey !== operatorKey) return sendJson(res, 403, { error: '操作員金鑰錯誤' });
+      broadcast('interim', { text: String(body.text ?? '').slice(0, 2000), pending: true });
+      return sendJson(res, 200, { ok: true });
+    }
+
     // ---- 操作員：更新收音狀態 ----
     if (req.method === 'POST' && path === '/api/status') {
       let body;
