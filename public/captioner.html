@@ -86,9 +86,28 @@
   #notesMeta { font-size: 12px; color: var(--dim); }
   #notesBody { flex: 1 1 auto; overflow-y: auto; padding: 20px 22px; margin: 0;
     font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", ui-monospace, monospace;
-    font-size: 14px; line-height: 1.75; white-space: pre-wrap; word-break: break-word;
-    color: var(--fg); }
+    font-size: 14px; line-height: 1.75; word-break: break-word; color: var(--fg); }
   #notesBody.working { color: var(--dim); font-style: italic; }
+  /* ---- 筆記內的 Markdown 渲染 ---- */
+  #notesBody h1, #notesBody h2, #notesBody h3 {
+    margin: 1.4em 0 .5em; line-height: 1.35; color: var(--fg); }
+  #notesBody h1 { font-size: 1.45em; }
+  #notesBody h2 { font-size: 1.22em; padding-bottom: .3em; border-bottom: 1px solid var(--line); }
+  #notesBody h3 { font-size: 1.08em; }
+  #notesBody > :first-child { margin-top: 0; }
+  #notesBody p { margin: .7em 0; }
+  #notesBody ul, #notesBody ol { margin: .5em 0; padding-left: 1.6em; }
+  #notesBody li { margin: .3em 0; }
+  #notesBody strong { color: #fff; font-weight: 600; }
+  #notesBody code { background: #21262d; border: 1px solid var(--line); border-radius: 4px;
+    padding: .1em .4em; font-size: .9em; font-family: ui-monospace, monospace; }
+  #notesBody table { border-collapse: collapse; margin: .9em 0; width: 100%;
+    display: block; overflow-x: auto; }
+  #notesBody th, #notesBody td { border: 1px solid var(--line); padding: .5em .7em;
+    text-align: left; vertical-align: top; }
+  #notesBody th { background: #1c2230; font-weight: 600; }
+  #notesBody hr { border: none; border-top: 1px solid var(--line); margin: 1.2em 0; }
+
 </style>
 </head>
 <body>
@@ -172,13 +191,15 @@
       <span id="notesMeta"></span>
       <div class="spacer"></div>
       <button id="notesCopy">複製</button>
-      <button id="notesSave">下載 .md</button>
+      <button id="notesSave">下載 Word</button>
       <button id="notesClose">關閉</button>
     </div>
-    <pre id="notesBody"></pre>
+    <div id="notesBody"></div>
   </div>
 </div>
 
+<script src="/static/md.js"></script>
+<script src="/static/docx.js"></script>
 <script>
 (() => {
   'use strict';
@@ -775,7 +796,7 @@
       }
       notesText = data.notes || '';
       notesBody.className = '';
-      notesBody.textContent = notesText || '（模型沒有回傳內容）';
+      notesBody.innerHTML = notesText ? renderMarkdown(notesText) : '（模型沒有回傳內容）';
       $('notesMeta').textContent =
         `${data.sentences} 句 · ${data.provider}/${data.model}` + (data.truncated ? ' · 逐字稿過長已截斷' : '');
     } catch (err) {
@@ -803,10 +824,15 @@
 
   $('notesSave').onclick = () => {
     if (!notesText) return;
-    const url = URL.createObjectURL(new Blob([notesText], { type: 'text/markdown;charset=utf-8' }));
+    const bytes = markdownToDocx(notesText, `課程筆記　${notesDay}`);
+    const url = URL.createObjectURL(
+      new Blob([bytes], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      })
+    );
     const a = document.createElement('a');
     a.href = url;
-    a.download = `notes-${notesDay}.md`;
+    a.download = `課程筆記-${notesDay}.docx`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
