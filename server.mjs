@@ -25,6 +25,11 @@ const TRANSCRIPT_DIR = join(ROOT, 'transcripts');
 const BACKLOG_SIZE = 40;   // 中途加入的觀眾能補看幾句
 const CONTEXT_SIZE = 2;    // 餵給翻譯模型的前文句數
 
+// 觀眾端筆記至少要新增這麼多句才值得重算。
+// 約 40 句 ≈ 5-6 分鐘的講課量；低於這個數字，重算出來的筆記幾乎一樣，
+// 卻要再送一次完整逐字稿。設 0 表示每次都重算。
+const NOTES_MIN_NEW_CAPTIONS = Number(process.env.NOTES_MIN_NEW_CAPTIONS) || 40;
+
 // ---------------------------------------------------------------- 設定載入
 
 async function loadEnvFile(path) {
@@ -632,11 +637,16 @@ async function main() {
         isOperator && Array.isArray(body.rows) && body.rows.length ? body.rows : state.transcript;
       if (!rows.length) return sendJson(res, 400, { error: '沒有逐字稿可以整理' });
 
-      // 觀眾端走快取：十個學生同時按，只該真的算一次。
-      // 內容沒有增加就直接回上一份，全班也因此拿到一模一樣的筆記。
+      // 觀眾端走快取。
+      //
+      // 判斷是否重算不能用「有沒有新字幕」—— 講者持續講話時 seq 每幾秒就 +1，
+      // 那等於每個學生按一次就重算一次，20 人錯開按就是 20 次全份逐字稿的呼叫。
+      // 改成「新增的內容是否足以改變筆記」：不足門檻就回上一份。
+      // 這同時讓全班拿到一致的筆記，也避免重複付費。
       if (isViewer) {
-        if (state.notesCache && state.notesCache.seq === state.seq) {
-          return sendJson(res, 200, { ...state.notesCache, cached: true });
+        const cached = state.notesCache;
+        if (cached && state.seq - cached.seq < NOTES_MIN_NEW_CAPTIONS) {
+          return sendJson(res, 200, { ...cached, cached: true, totalSeq: state.seq });
         }
         if (state.notesPromise) {
           try {
@@ -679,6 +689,7 @@ async function main() {
           model: summaryModel,
           provider: summaryProviderName,
           seq: seqAtStart,
+          totalSeq: seqAtStart,
         }));
 
       if (isViewer) state.notesPromise = work;

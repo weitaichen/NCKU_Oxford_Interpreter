@@ -366,8 +366,13 @@
       }
       notesText = data.notes || '';
       notesBody.innerHTML = notesText ? renderMarkdown(notesText) : '（目前還沒有足夠的內容可以整理）';
+      // 讓學生看得出這份筆記涵蓋到哪裡，而不是以為永遠是最新的
+      const behind = (data.totalSeq ?? 0) - (data.seq ?? 0);
       $('notesMeta').textContent =
-        `${data.sentences} 句${data.cached ? ' · 已有同學產生過' : ''}${data.truncated ? ' · 內容過長已截斷' : ''}`;
+        `涵蓋 ${data.sentences} 句` +
+        (behind > 0 ? `（之後又新增 ${behind} 句）` : '') +
+        (data.cached ? ' · 沿用同學剛產生的' : '') +
+        (data.truncated ? ' · 內容過長已截斷' : '');
     } catch (err) {
       notesBody.className = '';
       notesBody.textContent = '產生失敗：' + err.message;
