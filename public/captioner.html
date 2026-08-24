@@ -49,6 +49,9 @@
     padding: 10px 18px; background: #11161d; border-bottom: 1px solid var(--line); font-size: 13px; }
   #setup label { color: var(--dim); }
   #opKey { width: 140px; }
+  #gain { width: 108px; padding: 0; background: none; border: none; accent-color: var(--accent); }
+  #gain:disabled { opacity: .35; }
+  #gainNow { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
   #setup.collapsed { display: none; }
 
   /* 手機上設定列原本吃掉快一半螢幕，收起來把空間留給字幕 */
@@ -83,6 +86,7 @@
   body:not(.running) #interim:empty::before { content: ""; }
   #meter { flex: none; width: 60px; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; }
   #meterFill { height: 100%; width: 0%; background: var(--ok); transition: width .08s linear; }
+  #meter.clip #meterFill { background: var(--err); }
 
   /* ---- 筆記視窗 ---- */
   #notesModal { position: fixed; inset: 0; z-index: 30; display: none;
@@ -152,6 +156,10 @@
 
   <label for="mic">麥克風</label>
   <select id="mic" style="max-width:210px"><option value="">預設</option></select>
+
+  <label for="gain">增益</label>
+  <input id="gain" type="range" min="1" max="8" step="0.5" value="1">
+  <span id="gainNow"></span>
 
   <label for="lang">口音</label>
   <select id="lang" title="辨識效果不好時換這個試試">
@@ -243,6 +251,7 @@
 
   // Deepgram 相關
   let audioContext = null, mediaStream = null, workletNode = null, sourceNode = null, analyser = null;
+  let gainNode = null;
   let dgSocket = null, dgKeepAlive = null, dgPending = '';
   let dgPendingSince = 0, dgWatchdog = null, forcedFlushes = 0;
   let lastInterimSent = '', interimTimer = null;
@@ -313,7 +322,10 @@
   if (IS_IOS) {
     engineSel.querySelector('[value="webspeech"]').textContent = 'Google Web Speech（iPhone 不建議）';
   }
-  engineSel.onchange = () => localStorage.setItem('engine', engineSel.value);
+  engineSel.onchange = () => {
+    localStorage.setItem('engine', engineSel.value);
+    syncGainAvail();
+  };
 
   const micSel = $('mic');
   const langSel = $('lang');
@@ -381,6 +393,49 @@
   micSel.onchange = () => {
     localStorage.setItem('mic', micSel.value);
     if (running) showBanner('麥克風已變更，請按停止再重新開始收音才會生效。');
+  };
+
+  // ---------- 麥克風增益 ----------
+  // 收音時刻意關掉了 autoGainControl（理由見 startDeepgram），代價是筆電內建麥克風
+  // 太小聲時，沒有任何東西幫忙把音量補起來。這個滑桿就是那段補償：
+  // 純線性放大，不做動態壓縮，所以沒有 AGC 為了人耳好聽而扭曲語音的副作用。
+  //
+  // 只對 Deepgram 有效 —— Web Speech 是瀏覽器自己抓麥克風，那條音訊我們碰不到。
+
+  const gainSel = $('gain'), gainNow = $('gainNow');
+  gainSel.value = localStorage.getItem('gain') || '1';
+
+  const gainActive = () => engineSel.value !== 'webspeech';
+  const micGain = () => (gainActive() ? Number(gainSel.value) || 1 : 1);
+
+  // 真實峰值到這個百分比就算削波（送出去的 PCM 會被 clamp 在 ±1）
+  const CLIP_PCT = 98;
+  let clipFrames = 0, clipWarnedAt = 0;
+
+  // 音量表本身有 2.2 倍視覺放大（滿格其實只等於真實峰值 45%），拿來調增益會失準，
+  // 所以這裡把真實峰值直接寫成數字。講話時的目標是峰值 50–80%。
+  function paintGain(peak) {
+    // 百分比補到 3 位（U+2007 是數字寬的空白），數字位數變動時整列才不會跟著跳
+    const pct = peak == null ? '' : ` · 峰值 ${String(peak).padStart(3, '\u2007')}%`;
+    gainNow.textContent = micGain().toFixed(1) + '×' + pct;
+    gainNow.style.color = peak >= CLIP_PCT ? 'var(--err)' : 'var(--dim)';
+  }
+
+  function syncGainAvail() {
+    gainSel.disabled = !gainActive();
+    gainSel.title = gainSel.disabled
+      ? 'Web Speech 由瀏覽器自己收音，增益對它無效。改用 Deepgram 引擎才有作用。'
+      : '放大麥克風音量。筆電內建麥克風太小聲時往上調，但調過頭會削波，比太小聲更傷辨識率。';
+    paintGain();
+  }
+  syncGainAvail();
+
+  gainSel.oninput = () => {
+    localStorage.setItem('gain', gainSel.value);
+    paintGain();
+    // 立刻生效，不必停止再重開。用斜坡而不是直接賦值，避免拉滑桿時爆出喀噠聲。
+    if (gainNode && audioContext) gainNode.gain.setTargetAtTime(micGain(), audioContext.currentTime, 0.02);
+    clipFrames = 0;
   };
 
   const endpointSel = $('endpoint');
@@ -502,13 +557,45 @@
 
   // ---------- 音量表 ----------
 
+  let peakHold = 0, peakPaintedAt = 0;
+
   function pumpMeter() {
-    if (!running || !analyser) { $('meterFill').style.width = '0%'; return; }
+    if (!running || !analyser) {
+      $('meterFill').style.width = '0%';
+      $('meter').classList.remove('clip');
+      paintGain();
+      return;
+    }
     const buf = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteTimeDomainData(buf);
     let peak = 0;
     for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
     $('meterFill').style.width = Math.min(100, (peak / 128) * 220) + '%';
+
+    // 增益開過頭會讓 pcm-worklet 把訊號 clamp 在 ±1。削波比收音太小更傷辨識率，
+    // 而且從那條有放大的音量表上看不出來，所以主動提示。
+    const pct = Math.round((peak / 128) * 100);
+    $('meter').classList.toggle('clip', pct >= CLIP_PCT);
+    if (pct >= CLIP_PCT && micGain() > 1) {
+      clipFrames++;
+      // 約 0.75 秒的持續削波才提示 —— 偶爾一聲咳嗽或拍桌不該跳警告
+      if (clipFrames >= 45 && Date.now() - clipWarnedAt > 15000) {
+        clipWarnedAt = Date.now();
+        showBanner(`音量<b>削波</b>了（增益 ${micGain().toFixed(1)}×）。請把增益往下調到峰值不再滿格為止 —— 削波比收音太小更傷辨識率。`);
+        setTimeout(hideBanner, 6000);
+      }
+    } else if (pct < CLIP_PCT - 8) {
+      clipFrames = 0;
+    }
+
+    // 峰值數字每秒重畫 5 次就夠了，不必跟著 60fps 動 DOM
+    peakHold = Math.max(peakHold, pct);
+    if (Date.now() - peakPaintedAt > 200) {
+      peakPaintedAt = Date.now();
+      paintGain(peakHold);
+      peakHold = 0;
+    }
+
     requestAnimationFrame(pumpMeter);
   }
 
@@ -548,13 +635,18 @@
     await audioContext.audioWorklet.addModule('/static/pcm-worklet.js');
 
     sourceNode = audioContext.createMediaStreamSource(mediaStream);
+    // 增益接在最前面，analyser 和 worklet 都吃放大後的訊號 ——
+    // 音量表和削波偵測看到的就是真正送給 Deepgram 的那份音訊。
+    gainNode = audioContext.createGain();
+    gainNode.gain.value = micGain();
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 512;
     workletNode = new AudioWorkletNode(audioContext, 'pcm-processor', {
       processorOptions: { chunkMs: 100 },
     });
-    sourceNode.connect(analyser);
-    sourceNode.connect(workletNode);
+    sourceNode.connect(gainNode);
+    gainNode.connect(analyser);
+    gainNode.connect(workletNode);
 
     const track = mediaStream.getAudioTracks()[0];
     $('audioInfo').textContent = `${rate / 1000}kHz · ${track?.label?.slice(0, 28) || '預設麥克風'}`;
@@ -701,10 +793,11 @@
     clearInterval(dgWatchdog);
     try { if (workletNode) workletNode.port.onmessage = null; } catch {}
     try { workletNode?.disconnect(); } catch {}
+    try { gainNode?.disconnect(); } catch {}
     try { sourceNode?.disconnect(); } catch {}
     try { audioContext?.close(); } catch {}
     try { mediaStream?.getTracks().forEach((t) => t.stop()); } catch {}
-    workletNode = sourceNode = analyser = audioContext = mediaStream = null;
+    workletNode = sourceNode = analyser = gainNode = audioContext = mediaStream = null;
     if (dgSocket) {
       const sock = dgSocket;
       dgSocket = null;
@@ -903,9 +996,13 @@
     await refreshMicList();
     const ctx = new AudioContext();
     const src = ctx.createMediaStreamSource(stream);
+    // 測試時也套上增益，回報的峰值才等於真正會送出去的音量
+    const g = ctx.createGain();
+    g.gain.value = micGain();
     const an = ctx.createAnalyser();
     an.fftSize = 512;
-    src.connect(an);
+    src.connect(g);
+    g.connect(an);
     const buf = new Uint8Array(an.frequencyBinCount);
     let peakSeen = 0;
     const until = Date.now() + 6000;
@@ -925,10 +1022,15 @@
       $('meterFill').style.width = '0%';
       btn.textContent = '測試麥克風';
       const label = stream.getAudioTracks()[0]?.label || '預設麥克風';
+      const pct = Math.round((peakSeen / 128) * 100);
       if (peakSeen < 4) {
         showBanner(`權限正常，但<b>幾乎沒有收到聲音</b>（${label}）。請確認麥克風沒有被靜音、或換一支裝置。`);
+      } else if (pct >= CLIP_PCT) {
+        showBanner(`音量<b>削波</b>了（${label}，峰值 ${pct}%）。請把<b>增益</b>往下調 —— 削波比收音太小更傷辨識率。`);
+      } else if (pct < 25 && gainActive() && Number(gainSel.value) < 8) {
+        showBanner(`麥克風正常（${label}），但<b>音量偏小</b>（峰值 ${pct}%）。把<b>增益</b>往上調，讓講話時的峰值落在 50–80% 再開始收音。`);
       } else {
-        showBanner(`✓ 麥克風正常（${label}），音量峰值 ${Math.round((peakSeen / 128) * 100)}%。可以開始收音了。`);
+        showBanner(`✓ 麥克風正常（${label}），音量峰值 ${pct}%。可以開始收音了。`);
         setTimeout(hideBanner, 6000);
       }
     })();
