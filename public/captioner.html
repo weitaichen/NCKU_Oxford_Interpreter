@@ -564,7 +564,9 @@
       setTimeout(() => { if (running) startDeepgram().catch(onFatal); }, 800);
     };
 
-    setPill('dotStt', 'sttText', `收音中 · ${token.language}`, 'live');
+    // 顯示「實際送給 Deepgram 的語言」，不是伺服器 .env 的預設值 ——
+    // 兩者不同時會讓人以為口音選單沒生效
+    setPill('dotStt', 'sttText', `收音中 · Deepgram · ${params.get('language')}`, 'live');
     requestAnimationFrame(pumpMeter);
   }
 
@@ -605,7 +607,7 @@
     const handled = new Set();
 
     rec.onstart = () => {
-      setPill('dotStt', 'sttText', `收音中 · ${rec.lang}`, 'live');
+      setPill('dotStt', 'sttText', `收音中 · Google · ${rec.lang}`, 'live');
       setPill('dotNet', 'netText', 'Web Speech 備援', 'warn');
     };
 
